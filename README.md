@@ -4,8 +4,8 @@ PnPKit is a pure-Rust [Perspective-n-Point](https://en.wikipedia.org/wiki/Perspe
 pose estimator. It recovers the 6-DoF pose of a calibrated camera from known 3D
 landmarks and their 2D image observations, with no OpenCV dependency.
 
-The core is written in Rust and is exposed through Rust, C, WebAssembly, and an
-Expo module for React Native.
+The core is written in Rust and is exposed through Rust, Python/NumPy, C,
+WebAssembly, and an Expo module for React Native.
 
 ## Features
 
@@ -13,6 +13,7 @@ Expo module for React Native.
 - Square-marker pose from camera rays (AR / portal calibration workflows)
 - `no_std` compatible core (with `alloc`)
 - C FFI with auto-generated header for iOS / Android / desktop embedding
+- Python/NumPy bindings (`aukilabs-pnpkit` / `auki_pnpkit`)
 - WASM Component Model interface via WIT (`auki:pnp@0.1.0`)
 - Numerically validated against OpenCV `cv::solvePnP` reference output
 
@@ -25,6 +26,7 @@ crates/
   pnp-wasm/    WASM Component Model guest (wit-bindgen)
 
 bindings/
+  python/      PyPI/Maturin project with NumPy-friendly API
   expo-pnp/    Expo module + prebuilt Android/iOS natives
 ```
 
@@ -55,6 +57,27 @@ pnp-core = { path = "crates/pnp-core" }
 use pnp_core::types::*;
 ```
 
+### Python
+
+```bash
+just python-build         # wheel → bindings/python/dist
+just python-test          # isolated wheel + pytest
+```
+
+```python
+import numpy as np
+import auki_pnpkit
+
+pose = auki_pnpkit.solve_pnp(
+    object_points,   # (N, 3)
+    image_points,    # (N, 2)
+    camera_matrix,   # (3, 3) OpenCV K
+    method="iterative",
+)
+```
+
+See [bindings/python/README.md](bindings/python/README.md).
+
 ### Expo
 
 Autolink `bindings/expo-pnp` (for example via a git submodule under
@@ -84,12 +107,15 @@ import { estimateSquarePoseFromRays } from "expo-pnp";
 | `just expo-ios` | Package `PnpRust.xcframework` into the Expo package |
 | `just expo-native` | Both mobile targets |
 | `just build-wasm-release` | WASM component |
+| `just python-build` | Build Python wheel into `bindings/python/dist` |
+| `just python-test` | Isolated Python/NumPy integration tests |
 
 Additional platform requirements:
 
 - Android builds need the Android NDK and `cbindgen`
 - iOS builds need macOS, Xcode, and the iOS Rust targets
 - WASM builds need `cargo-component` (and `jco` for JS transpile)
+- Python bindings need Python 3.9+ and Maturin or `uv`/`uvx`
 
 ## License
 

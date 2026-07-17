@@ -66,7 +66,8 @@ Android builds target API level 24 (Android 7.0) by default.
 | Tool | Install | Used for |
 |------|---------|----------|
 | [jco](https://github.com/nicknisi/jco) | `npm install -g @bytecodealliance/jco` | Transpile WASM component to browser JS |
-| Python 3.10+ | System or `brew install python` | Regenerating reference test data |
+| Python 3.9+ | System or `brew install python` | Regenerating reference data; Python bindings |
+| [uv](https://github.com/astral-sh/uv) or Maturin | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | Build/test `bindings/python` |
 | [opencv-python](https://pypi.org/project/opencv-python/) | `pip install opencv-python numpy` | Used by the reference data generator |
 
 ### 6. Verify your setup
@@ -88,10 +89,11 @@ just test
 ### Running Tests
 
 ```bash
-just test              # All tests (92 across workspace)
+just test              # All tests across the workspace
 just test-core         # pnp-core unit tests only
 just test-integration  # Integration tests against OpenCV reference data
 just test-ffi          # C FFI binding tests
+just python-test       # Isolated Python wheel + pytest suite
 just check-nostd       # Verify no_std compatibility
 just check-all         # Tests + no_std + clippy
 ```
@@ -155,6 +157,9 @@ crates/
     src/lib.rs           #[repr(C)] types + extern "C" functions
     include/pnp.h        Auto-generated C header (cbindgen)
     cbindgen.toml        cbindgen configuration
+bindings/
+  python/                aukilabs-pnpkit Maturin/PyO3 package
+  expo-pnp/              Expo module + prebuilt Android/iOS natives
 tests/
   generate_reference.py  OpenCV reference data generator
   reference_vectors/     JSON reference output

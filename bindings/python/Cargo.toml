@@ -1,0 +1,19 @@
+[package]
+name = "pnpkit-python"
+description = "Python and NumPy bindings for PnPKit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
+
+[dependencies]
+numpy = "0.29.0"
+pnp-core = { path = "../../crates/pnp-core" }
+pyo3 = "0.29.0"

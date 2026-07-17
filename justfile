@@ -274,6 +274,18 @@ ffi-test:
     cargo test -p pnp-ffi --locked
 
 # ---------------------------------------------------------------------------
+# Python bindings (bindings/python)
+# ---------------------------------------------------------------------------
+
+# Build the aukilabs-pnpkit Python wheel into bindings/python/dist/
+python-build:
+    ./scripts/build-python.sh
+
+# Build an isolated wheel and run the Python/NumPy integration suite
+python-test:
+    ./scripts/check-python.sh
+
+# ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
 

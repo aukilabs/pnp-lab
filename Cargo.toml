@@ -4,6 +4,7 @@ members = [
     "crates/pnp-core",
     "crates/pnp-wasm",
     "crates/pnp-ffi",
+    "bindings/python",
 ]
 
 [workspace.package]
