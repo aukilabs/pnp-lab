@@ -1,0 +1,37 @@
+package auki:pnp@0.1.0;
+
+interface types {
+    record vector2 { x: f64, y: f64 }
+    record vector3 { x: f64, y: f64, z: f64 }
+    record quaternion { x: f64, y: f64, z: f64, w: f64 }
+    record matrix3x3 { m00: f64, m01: f64, m02: f64, m10: f64, m11: f64, m12: f64, m20: f64, m21: f64, m22: f64 }
+    record pose { position: vector3, rotation: quaternion }
+    record landmark { id: string, position: vector3 }
+    record landmark-observation { id: string, position: vector2 }
+    enum solve-pnp-method { epnp, iterative, sqpnp }
+    enum pnp-error { insufficient-points, solver-failed, mismatched-counts }
+}
+
+interface solver {
+    use types.{landmark, landmark-observation, matrix3x3, pose, solve-pnp-method, pnp-error};
+
+    solve-pnp: func(
+        landmarks: list<landmark>,
+        observations: list<landmark-observation>,
+        camera-matrix: matrix3x3,
+        method: solve-pnp-method,
+    ) -> result<pose, pnp-error>;
+
+    solve-pnp-camera-pose: func(
+        landmarks: list<landmark>,
+        observations: list<landmark-observation>,
+        camera-matrix: matrix3x3,
+        method: solve-pnp-method,
+    ) -> result<pose, pnp-error>;
+
+    camera-pose-from-solve-pnp-pose: func(pose: pose) -> pose;
+}
+
+world pnp {
+    export solver;
+}

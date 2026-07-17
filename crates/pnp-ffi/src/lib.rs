@@ -1,0 +1,637 @@
+//! C FFI bindings for PnP pose estimation.
+#![allow(non_camel_case_types)]
+
+use pnp_core::types as core;
+use std::ffi::CStr;
+use std::os::raw::c_char;
+use std::slice;
+
+/// 2D vector.
+#[repr(C)]
+pub struct pnp_vector2_t {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// 3D vector.
+#[repr(C)]
+pub struct pnp_vector3_t {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// 3D ray.
+#[repr(C)]
+pub struct pnp_ray_t {
+    pub origin: pnp_vector3_t,
+    pub direction: pnp_vector3_t,
+}
+
+/// Quaternion (Hamilton convention: x, y, z, w).
+#[repr(C)]
+pub struct pnp_quaternion_t {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub w: f64,
+}
+
+/// 3x3 matrix in column-major order: m[col*3 + row].
+#[repr(C)]
+pub struct pnp_matrix3x3_t {
+    pub m: [f64; 9],
+}
+
+/// Pose (position + rotation).
+#[repr(C)]
+pub struct pnp_pose_t {
+    pub position: pnp_vector3_t,
+    pub rotation: pnp_quaternion_t,
+}
+
+/// Landmark (3D point with string ID).
+#[repr(C)]
+pub struct pnp_landmark_t {
+    pub id: *const c_char,
+    pub position: pnp_vector3_t,
+}
+
+/// Landmark observation (2D point with string ID).
+#[repr(C)]
+pub struct pnp_landmark_observation_t {
+    pub id: *const c_char,
+    pub position: pnp_vector2_t,
+}
+
+/// Solve method enum.
+#[repr(C)]
+pub enum pnp_method_t {
+    PNP_METHOD_EPNP = 0,
+    PNP_METHOD_ITERATIVE = 1,
+    PNP_METHOD_SQPNP = 2,
+}
+
+/// Error codes.
+#[repr(C)]
+pub enum pnp_error_t {
+    PNP_OK = 0,
+    PNP_ERROR_INSUFFICIENT_POINTS = 1,
+    PNP_ERROR_SOLVER_FAILED = 2,
+    PNP_ERROR_MISMATCHED_COUNTS = 3,
+    PNP_ERROR_NULL_POINTER = 4,
+    PNP_ERROR_INVALID_STRING = 5,
+}
+
+/// Result struct returned by solve functions.
+#[repr(C)]
+pub struct pnp_result_t {
+    pub error: pnp_error_t,
+    pub pose: pnp_pose_t,
+}
+
+/// Result struct returned by square pose estimation.
+#[repr(C)]
+pub struct pnp_square_pose_estimate_t {
+    pub error: pnp_error_t,
+    pub pose: pnp_pose_t,
+    pub confidence: f64,
+    pub normalized_corner_error: f64,
+    pub ray_distances: [f64; 4],
+}
+
+fn core_error_to_ffi(e: core::PnpError) -> pnp_error_t {
+    match e {
+        core::PnpError::InsufficientPoints => pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS,
+        core::PnpError::SolverFailed => pnp_error_t::PNP_ERROR_SOLVER_FAILED,
+        core::PnpError::MismatchedCounts => pnp_error_t::PNP_ERROR_MISMATCHED_COUNTS,
+    }
+}
+
+fn core_vector3_to_ffi(v: &core::Vector3) -> pnp_vector3_t {
+    pnp_vector3_t {
+        x: v.x,
+        y: v.y,
+        z: v.z,
+    }
+}
+
+fn ffi_vector3_to_core(v: &pnp_vector3_t) -> core::Vector3 {
+    core::Vector3::new(v.x, v.y, v.z)
+}
+
+fn core_pose_to_ffi(p: &core::Pose) -> pnp_pose_t {
+    pnp_pose_t {
+        position: core_vector3_to_ffi(&p.position),
+        rotation: pnp_quaternion_t {
+            x: p.rotation.x,
+            y: p.rotation.y,
+            z: p.rotation.z,
+            w: p.rotation.w,
+        },
+    }
+}
+
+fn ffi_pose_to_core(p: &pnp_pose_t) -> core::Pose {
+    core::Pose::new(
+        core::Vector3::new(p.position.x, p.position.y, p.position.z),
+        core::Quaternion::new(p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w),
+    )
+}
+
+fn zero_pose() -> pnp_pose_t {
+    pnp_pose_t {
+        position: pnp_vector3_t {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        rotation: pnp_quaternion_t {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+    }
+}
+
+fn zero_square_pose_estimate(error: pnp_error_t) -> pnp_square_pose_estimate_t {
+    pnp_square_pose_estimate_t {
+        error,
+        pose: zero_pose(),
+        confidence: 0.0,
+        normalized_corner_error: 0.0,
+        ray_distances: [0.0; 4],
+    }
+}
+
+fn method_to_core(m: pnp_method_t) -> core::SolvePnpMethod {
+    match m {
+        pnp_method_t::PNP_METHOD_EPNP => core::SolvePnpMethod::EPnP,
+        pnp_method_t::PNP_METHOD_ITERATIVE => core::SolvePnpMethod::Iterative,
+        pnp_method_t::PNP_METHOD_SQPNP => core::SolvePnpMethod::SQPnP,
+    }
+}
+
+unsafe fn read_c_str(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_owned())
+}
+
+/// Estimate an Ark square pose from four corner rays.
+///
+/// Rays must be ordered top-left, top-right, bottom-right, bottom-left.
+/// Directions may be unnormalized. `physical_size` must use the same units as
+/// the ray coordinate frame, normally meters in the AR calibration flow.
+///
+/// # Safety
+/// `rays` must point to exactly four valid `pnp_ray_t` structs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_estimate_square_pose_from_rays(
+    rays: *const pnp_ray_t,
+    num_rays: usize,
+    physical_size: f64,
+) -> pnp_square_pose_estimate_t {
+    if rays.is_null() {
+        return zero_square_pose_estimate(pnp_error_t::PNP_ERROR_NULL_POINTER);
+    }
+    if num_rays != 4 {
+        return zero_square_pose_estimate(pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS);
+    }
+
+    let ray_slice = slice::from_raw_parts(rays, num_rays);
+    let core_rays = [
+        core::Ray3 {
+            origin: ffi_vector3_to_core(&ray_slice[0].origin),
+            direction: ffi_vector3_to_core(&ray_slice[0].direction),
+        },
+        core::Ray3 {
+            origin: ffi_vector3_to_core(&ray_slice[1].origin),
+            direction: ffi_vector3_to_core(&ray_slice[1].direction),
+        },
+        core::Ray3 {
+            origin: ffi_vector3_to_core(&ray_slice[2].origin),
+            direction: ffi_vector3_to_core(&ray_slice[2].direction),
+        },
+        core::Ray3 {
+            origin: ffi_vector3_to_core(&ray_slice[3].origin),
+            direction: ffi_vector3_to_core(&ray_slice[3].direction),
+        },
+    ];
+
+    match pnp_core::estimate_square_pose_from_rays(core_rays, physical_size) {
+        Ok(estimate) => pnp_square_pose_estimate_t {
+            error: pnp_error_t::PNP_OK,
+            pose: core_pose_to_ffi(&estimate.pose),
+            confidence: estimate.confidence,
+            normalized_corner_error: estimate.normalized_corner_error,
+            ray_distances: estimate.ray_distances,
+        },
+        Err(error) => zero_square_pose_estimate(core_error_to_ffi(error)),
+    }
+}
+
+/// Solve PnP and return object pose in OpenGL coordinates.
+///
+/// # Safety
+/// `landmarks` must point to `num_landmarks` valid `pnp_landmark_t` structs.
+/// `observations` must point to `num_observations` valid `pnp_landmark_observation_t` structs.
+/// All `id` pointers within landmarks/observations must be valid null-terminated C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_solve(
+    landmarks: *const pnp_landmark_t,
+    num_landmarks: usize,
+    observations: *const pnp_landmark_observation_t,
+    num_observations: usize,
+    camera_matrix: *const pnp_matrix3x3_t,
+    method: pnp_method_t,
+) -> pnp_result_t {
+    if landmarks.is_null() || observations.is_null() || camera_matrix.is_null() {
+        return pnp_result_t {
+            error: pnp_error_t::PNP_ERROR_NULL_POINTER,
+            pose: zero_pose(),
+        };
+    }
+
+    let lm_slice = slice::from_raw_parts(landmarks, num_landmarks);
+    let obs_slice = slice::from_raw_parts(observations, num_observations);
+    let cam = &*camera_matrix;
+
+    let mut core_landmarks = Vec::with_capacity(num_landmarks);
+    for lm in lm_slice {
+        let id = match read_c_str(lm.id) {
+            Some(s) => s,
+            None => {
+                return pnp_result_t {
+                    error: pnp_error_t::PNP_ERROR_INVALID_STRING,
+                    pose: zero_pose(),
+                };
+            }
+        };
+        core_landmarks.push(core::Landmark {
+            id,
+            position: core::Vector3::new(lm.position.x, lm.position.y, lm.position.z),
+        });
+    }
+
+    let mut core_obs = Vec::with_capacity(num_observations);
+    for ob in obs_slice {
+        let id = match read_c_str(ob.id) {
+            Some(s) => s,
+            None => {
+                return pnp_result_t {
+                    error: pnp_error_t::PNP_ERROR_INVALID_STRING,
+                    pose: zero_pose(),
+                };
+            }
+        };
+        core_obs.push(core::LandmarkObservation {
+            id,
+            position: core::Vector2::new(ob.position.x, ob.position.y),
+        });
+    }
+
+    let core_cam = core::Matrix3x3 { m: cam.m };
+    let core_method = method_to_core(method);
+
+    match pnp_core::solve_pnp(&core_landmarks, &core_obs, &core_cam, core_method) {
+        Ok(pose) => pnp_result_t {
+            error: pnp_error_t::PNP_OK,
+            pose: core_pose_to_ffi(&pose),
+        },
+        Err(e) => pnp_result_t {
+            error: core_error_to_ffi(e),
+            pose: zero_pose(),
+        },
+    }
+}
+
+/// Solve PnP and return camera pose (inverted).
+///
+/// # Safety
+/// Same requirements as `peyote_pnp_solve`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_solve_camera_pose(
+    landmarks: *const pnp_landmark_t,
+    num_landmarks: usize,
+    observations: *const pnp_landmark_observation_t,
+    num_observations: usize,
+    camera_matrix: *const pnp_matrix3x3_t,
+    method: pnp_method_t,
+) -> pnp_result_t {
+    if landmarks.is_null() || observations.is_null() || camera_matrix.is_null() {
+        return pnp_result_t {
+            error: pnp_error_t::PNP_ERROR_NULL_POINTER,
+            pose: zero_pose(),
+        };
+    }
+
+    let lm_slice = slice::from_raw_parts(landmarks, num_landmarks);
+    let obs_slice = slice::from_raw_parts(observations, num_observations);
+    let cam = &*camera_matrix;
+
+    let mut core_landmarks = Vec::with_capacity(num_landmarks);
+    for lm in lm_slice {
+        let id = match read_c_str(lm.id) {
+            Some(s) => s,
+            None => {
+                return pnp_result_t {
+                    error: pnp_error_t::PNP_ERROR_INVALID_STRING,
+                    pose: zero_pose(),
+                };
+            }
+        };
+        core_landmarks.push(core::Landmark {
+            id,
+            position: core::Vector3::new(lm.position.x, lm.position.y, lm.position.z),
+        });
+    }
+
+    let mut core_obs = Vec::with_capacity(num_observations);
+    for ob in obs_slice {
+        let id = match read_c_str(ob.id) {
+            Some(s) => s,
+            None => {
+                return pnp_result_t {
+                    error: pnp_error_t::PNP_ERROR_INVALID_STRING,
+                    pose: zero_pose(),
+                };
+            }
+        };
+        core_obs.push(core::LandmarkObservation {
+            id,
+            position: core::Vector2::new(ob.position.x, ob.position.y),
+        });
+    }
+
+    let core_cam = core::Matrix3x3 { m: cam.m };
+    let core_method = method_to_core(method);
+
+    match pnp_core::solve_pnp_camera_pose(&core_landmarks, &core_obs, &core_cam, core_method) {
+        Ok(pose) => pnp_result_t {
+            error: pnp_error_t::PNP_OK,
+            pose: core_pose_to_ffi(&pose),
+        },
+        Err(e) => pnp_result_t {
+            error: core_error_to_ffi(e),
+            pose: zero_pose(),
+        },
+    }
+}
+
+/// Invert a solvePnP pose to get the camera pose.
+#[unsafe(no_mangle)]
+pub extern "C" fn peyote_pnp_camera_pose_from_solve_pnp_pose(
+    pose: *const pnp_pose_t,
+) -> pnp_pose_t {
+    if pose.is_null() {
+        return zero_pose();
+    }
+    let core_pose = ffi_pose_to_core(unsafe { &*pose });
+    let result = pnp_core::camera_pose_from_solve_pnp_pose(&core_pose);
+    core_pose_to_ffi(&result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn vector3(x: f64, y: f64, z: f64) -> pnp_vector3_t {
+        pnp_vector3_t { x, y, z }
+    }
+
+    fn add(a: &pnp_vector3_t, b: &pnp_vector3_t) -> pnp_vector3_t {
+        vector3(a.x + b.x, a.y + b.y, a.z + b.z)
+    }
+
+    fn sub(a: &pnp_vector3_t, b: &pnp_vector3_t) -> pnp_vector3_t {
+        vector3(a.x - b.x, a.y - b.y, a.z - b.z)
+    }
+
+    fn scale(v: &pnp_vector3_t, s: f64) -> pnp_vector3_t {
+        vector3(v.x * s, v.y * s, v.z * s)
+    }
+
+    fn length(v: &pnp_vector3_t) -> f64 {
+        (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+    }
+
+    fn normalize(v: &pnp_vector3_t) -> pnp_vector3_t {
+        let len = length(v);
+        scale(v, 1.0 / len)
+    }
+
+    fn cross(a: &pnp_vector3_t, b: &pnp_vector3_t) -> pnp_vector3_t {
+        vector3(
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x,
+        )
+    }
+
+    fn ray_to(origin: &pnp_vector3_t, corner: &pnp_vector3_t) -> pnp_ray_t {
+        pnp_ray_t {
+            origin: vector3(origin.x, origin.y, origin.z),
+            direction: sub(corner, origin),
+        }
+    }
+
+    fn synthetic_square_rays() -> [pnp_ray_t; 4] {
+        let physical_size = 0.8;
+        let half = physical_size * 0.5;
+        let center = vector3(0.35, 0.2, 2.6);
+        let camera_origin = vector3(-0.25, -0.15, -1.2);
+
+        let yaw = 0.37_f64;
+        let pitch = -0.24_f64;
+        let right = normalize(&vector3(yaw.cos(), pitch.sin(), -yaw.sin()));
+        let forward_seed = normalize(&vector3(yaw.sin(), 0.35, yaw.cos()));
+        let up = normalize(&cross(&forward_seed, &right));
+
+        let top_left = add(&center, &add(&scale(&right, -half), &scale(&up, half)));
+        let top_right = add(&center, &add(&scale(&right, half), &scale(&up, half)));
+        let bottom_right = add(&center, &add(&scale(&right, half), &scale(&up, -half)));
+        let bottom_left = add(&center, &add(&scale(&right, -half), &scale(&up, -half)));
+
+        [
+            ray_to(&camera_origin, &top_left),
+            ray_to(&camera_origin, &top_right),
+            ray_to(&camera_origin, &bottom_right),
+            ray_to(&camera_origin, &bottom_left),
+        ]
+    }
+
+    #[test]
+    fn test_estimate_square_pose_from_rays() {
+        let rays = synthetic_square_rays();
+
+        let result =
+            unsafe { peyote_pnp_estimate_square_pose_from_rays(rays.as_ptr(), 4, 0.8) };
+
+        assert!(matches!(result.error, pnp_error_t::PNP_OK));
+        assert!(result.pose.position.x.is_finite());
+        assert!(result.pose.position.y.is_finite());
+        assert!(result.pose.position.z.is_finite());
+        assert!(result.pose.rotation.x.is_finite());
+        assert!(result.pose.rotation.y.is_finite());
+        assert!(result.pose.rotation.z.is_finite());
+        assert!(result.pose.rotation.w.is_finite());
+        assert!(
+            result.confidence > 0.95,
+            "confidence was {}",
+            result.confidence
+        );
+        assert!(result.normalized_corner_error.is_finite());
+        for distance in result.ray_distances {
+            assert!(distance.is_finite());
+            assert!(distance > 0.0);
+        }
+
+        let insufficient =
+            unsafe { peyote_pnp_estimate_square_pose_from_rays(rays.as_ptr(), 3, 0.8) };
+        assert!(matches!(
+            insufficient.error,
+            pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS
+        ));
+
+        let null_result =
+            unsafe { peyote_pnp_estimate_square_pose_from_rays(std::ptr::null(), 4, 0.8) };
+        assert!(matches!(
+            null_result.error,
+            pnp_error_t::PNP_ERROR_NULL_POINTER
+        ));
+    }
+
+    #[test]
+    fn test_pnp_solve_basic() {
+        let ids: Vec<CString> = (0..4)
+            .map(|i| CString::new(i.to_string()).unwrap())
+            .collect();
+
+        let landmarks = [
+            pnp_landmark_t {
+                id: ids[0].as_ptr(),
+                position: pnp_vector3_t {
+                    x: -0.15,
+                    y: -0.15,
+                    z: 0.0,
+                },
+            },
+            pnp_landmark_t {
+                id: ids[1].as_ptr(),
+                position: pnp_vector3_t {
+                    x: 0.15,
+                    y: -0.15,
+                    z: 0.0,
+                },
+            },
+            pnp_landmark_t {
+                id: ids[2].as_ptr(),
+                position: pnp_vector3_t {
+                    x: 0.15,
+                    y: 0.15,
+                    z: 0.0,
+                },
+            },
+            pnp_landmark_t {
+                id: ids[3].as_ptr(),
+                position: pnp_vector3_t {
+                    x: -0.15,
+                    y: 0.15,
+                    z: 0.0,
+                },
+            },
+        ];
+
+        let observations = [
+            pnp_landmark_observation_t {
+                id: ids[0].as_ptr(),
+                position: pnp_vector2_t {
+                    x: 849.3577,
+                    y: 461.7641,
+                },
+            },
+            pnp_landmark_observation_t {
+                id: ids[1].as_ptr(),
+                position: pnp_vector2_t {
+                    x: 1070.642,
+                    y: 461.7641,
+                },
+            },
+            pnp_landmark_observation_t {
+                id: ids[2].as_ptr(),
+                position: pnp_vector2_t {
+                    x: 1096.898,
+                    y: 636.8014,
+                },
+            },
+            pnp_landmark_observation_t {
+                id: ids[3].as_ptr(),
+                position: pnp_vector2_t {
+                    x: 823.1021,
+                    y: 636.8014,
+                },
+            },
+        ];
+
+        // Camera matrix: fx=fy=815.8511, cx=960, cy=540
+        let cam = pnp_matrix3x3_t {
+            m: [815.8511, 0.0, 0.0, 0.0, 815.8511, 0.0, 960.0, 540.0, 1.0],
+        };
+
+        let result = unsafe {
+            peyote_pnp_solve(
+                landmarks.as_ptr(),
+                4,
+                observations.as_ptr(),
+                4,
+                &cam,
+                pnp_method_t::PNP_METHOD_ITERATIVE,
+            )
+        };
+
+        assert!(matches!(result.error, pnp_error_t::PNP_OK));
+        assert!(!result.pose.position.x.is_nan());
+        assert!(!result.pose.rotation.w.is_nan());
+    }
+
+    #[test]
+    fn test_pnp_solve_null_pointer() {
+        let cam = pnp_matrix3x3_t { m: [0.0; 9] };
+        let result = unsafe {
+            peyote_pnp_solve(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &cam,
+                pnp_method_t::PNP_METHOD_EPNP,
+            )
+        };
+        assert!(matches!(result.error, pnp_error_t::PNP_ERROR_NULL_POINTER));
+    }
+
+    #[test]
+    fn test_pnp_camera_pose_inversion() {
+        let pose = pnp_pose_t {
+            position: pnp_vector3_t {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            rotation: pnp_quaternion_t {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+        };
+        let cam_pose = peyote_pnp_camera_pose_from_solve_pnp_pose(&pose);
+        assert!((cam_pose.position.x - (-1.0)).abs() < 1e-10);
+        assert!((cam_pose.position.y - (-2.0)).abs() < 1e-10);
+        assert!((cam_pose.position.z - (-3.0)).abs() < 1e-10);
+    }
+}

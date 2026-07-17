@@ -1,0 +1,17 @@
+[package]
+name = "pnp-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C FFI bindings for PnP pose estimation"
+
+[lib]
+name = "peyote_pnp_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+# no default features: avoids nalgebra/std which pulls in matrixmultiply + simba/wide
+pnp-core = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.27"

@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pnp-core",
+    "crates/pnp-wasm",
+    "crates/pnp-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/aukilabs/pnpkit"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pnp-core = { path = "crates/pnp-core", default-features = false }
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true
+codegen-units = 1
+panic = "abort"
+
+# Mobile / size-sensitive release for pnp-ffi (cdylib + staticlib).
+# Host benches/tests keep the default release profile.
+[profile.release-mobile]
+inherits = "release"
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true
+panic = "abort"

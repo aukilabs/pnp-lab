@@ -1,0 +1,35 @@
+# Node
+node_modules/
+
+# Rust
+target/
+crates/pnp-ffi/include/
+
+# Android build artifacts
+**/android/.cxx/
+**/android/build/
+**/android/.gradle/
+
+# iOS build artifacts
+**/ios/build/
+**/ios/Pods/
+
+# Packaging / WASM transpile output
+/dist/
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Misc
+.DS_Store
+*.log
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.env
+.env.*

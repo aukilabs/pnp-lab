@@ -1,0 +1,46 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.pnp'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.pnp"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+    externalNativeBuild {
+      cmake {
+        arguments "-DANDROID_STL=c++_shared"
+        abiFilters (*reactNativeArchitectures())
+      }
+    }
+  }
+  sourceSets {
+    main {
+      // Prebuilt libpeyote_pnp_ffi.so from `just expo-android`.
+      jniLibs.srcDirs = ['src/main/jniLibs']
+    }
+  }
+  externalNativeBuild {
+    cmake {
+      path "src/main/cpp/CMakeLists.txt"
+    }
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+}
+
+def reactNativeArchitectures() {
+  def value = findProperty("reactNativeArchitectures")
+  def requested = value ? value.toString().split(",") : ["x86_64", "arm64-v8a"]
+  def supported = ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"]
+  return requested.findAll { supported.contains(it) }
+}
