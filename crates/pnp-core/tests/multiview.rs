@@ -4,8 +4,9 @@ use pnp_core::pose_tools::{self, transform_point};
 use pnp_core::rodrigues::rvec_to_rotation_matrix;
 use pnp_core::types::rotation_matrix_to_quaternion;
 use pnp_core::{
-    solve_pnp, solve_pnp_multiview, Camera, CameraView, Landmark, LandmarkObservation,
-    MultiViewObservation, MultiViewRig, Pose, Quaternion, SolvePnpMethod, Vector2, Vector3,
+    solve_pnp, solve_pnp_multiview, solve_pnp_stereo, Camera, CameraView, Landmark,
+    LandmarkObservation, MultiViewObservation, MultiViewRig, Pose, Quaternion, SolvePnpMethod,
+    StereoLandmarkObservation, StereoRig, Vector2, Vector3,
 };
 
 fn square_landmarks() -> Vec<Landmark> {
@@ -179,6 +180,91 @@ fn multiview_n1_recovers_known_pose_all_methods() {
         assert!(
             rot_err < 1e-3,
             "{:?}: rotation error {} rad exceeds 1e-3",
+            method,
+            rot_err
+        );
+    }
+}
+
+fn make_stereo_rig() -> StereoRig {
+    let left = Camera::pinhole(800.0, 800.0, 320.0, 240.0).unwrap();
+    let right = left.clone();
+    StereoRig::new(
+        left,
+        right,
+        Pose::new(Vector3::new(0.12, 0.0, 0.0), Quaternion::identity()),
+    )
+    .unwrap()
+}
+
+fn project_stereo(
+    landmarks: &[Landmark],
+    rig: &StereoRig,
+    cv_pose: &Pose,
+) -> Vec<StereoLandmarkObservation> {
+    landmarks
+        .iter()
+        .map(|lm| {
+            let x_left = transform_object_to_primary(cv_pose, lm.position);
+            let left = project_pinhole(&rig.left, x_left);
+            let x_right = transform_point(&rig.right_from_left, x_left);
+            let right = project_pinhole(&rig.right, x_right);
+            StereoLandmarkObservation {
+                id: lm.id.clone(),
+                left: Some(left),
+                right: Some(right),
+            }
+        })
+        .collect()
+}
+
+/// N=2 multiview must match the stereo public API on the same synthetic set.
+#[test]
+fn multiview_n2_matches_stereo_api() {
+    let landmarks = square_landmarks();
+    let stereo = make_stereo_rig();
+    let cv_true = cv_pose_from_rvec_tvec([0.05, -0.15, 0.08], [0.02, -0.01, 1.5]);
+    let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
+    let stereo_obs = project_stereo(&landmarks, &stereo, &cv_true);
+
+    let mv_rig = stereo.to_multiview();
+    let mv_obs: Vec<MultiViewObservation> = stereo_obs
+        .iter()
+        .map(|o| MultiViewObservation {
+            id: o.id.clone(),
+            pixels: vec![o.left, o.right],
+        })
+        .collect();
+
+    for method in [
+        SolvePnpMethod::Iterative,
+        SolvePnpMethod::EPnP,
+        SolvePnpMethod::SQPnP,
+    ] {
+        let pose_s =
+            solve_pnp_stereo(&landmarks, &stereo_obs, &stereo, method).expect("stereo");
+        let pose_m =
+            solve_pnp_multiview(&landmarks, &mv_obs, &mv_rig, method).expect("multiview n2");
+
+        // Both recover ground truth.
+        let (s_pos, s_rot) = pose_errors(&pose_s, &gl_true);
+        let (m_pos, m_rot) = pose_errors(&pose_m, &gl_true);
+        assert!(s_pos < 1e-3, "{:?}: stereo pos err {}", method, s_pos);
+        assert!(s_rot < 1e-3, "{:?}: stereo rot err {}", method, s_rot);
+        assert!(m_pos < 1e-3, "{:?}: mv pos err {}", method, m_pos);
+        assert!(m_rot < 1e-3, "{:?}: mv rot err {}", method, m_rot);
+
+        // N=2 ≡ stereo API (bit-identical path via wrapper; tight float tol).
+        let (pos_err, rot_err) = pose_errors(&pose_m, &pose_s);
+        assert!(
+            pos_err < 1e-12,
+            "{:?}: N=2 vs stereo position error {} exceeds 1e-12",
+            method,
+            pos_err
+        );
+        assert!(
+            rot_err < 1e-12,
+            "{:?}: N=2 vs stereo rotation error {} rad exceeds 1e-12",
             method,
             rot_err
         );
