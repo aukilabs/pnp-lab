@@ -82,6 +82,8 @@ A pinhole `(3, 3)` OpenCV camera matrix is also accepted instead of the
 | `solve_pnp_stereo(...)` | Object pose from stereo observations (OpenGL, left primary) |
 | `solve_pnp_stereo_camera_pose(...)` | Camera pose from stereo observations |
 | `triangulate(left_px, right_px, rig)` | Midpoint triangulation → left OpenCV 3D point |
+| `calibrate_from_square_views(...)` | Multi-view intrinsic calibration from square corners |
+| `calibrate_camera(...)` | Multi-view calibration from shared 3D object points |
 
 Image points are **distorted pixels**. When `dist` is set, they are undistorted
 inside the solver before EPnP / iterative / SQPnP run on an ideal pinhole model.
@@ -130,6 +132,42 @@ pose = auki_pnpkit.solve_pnp_stereo(
 point = auki_pnpkit.triangulate([320.0, 240.0], [295.0, 240.0], rig)
 # point["x"], point["y"], point["z"]
 ```
+
+## Multi-view camera calibration
+
+Recover monocular intrinsics (+ optional Brown–Conrady distortion) from many
+views of a known planar target. Prefer
+`calibrate_from_square_views` for QR / planar quads (corners **TL→TR→BR→BL**).
+
+```python
+import numpy as np
+import auki_pnpkit
+
+# corners: (N, 4, 2) array or sequence of 4-point views
+result = auki_pnpkit.calibrate_from_square_views(
+    corners,
+    physical_size=0.05,          # meters (or same unit as object model)
+    image_size=(1920, 1080),     # or image_width=..., image_height=...
+    fix_aspect_ratio=True,
+    dist_len=5,                  # 0 | 2 | 4 | 5 | 8 free coeffs
+    min_views=3,
+)
+# result["camera"] = {fx, fy, cx, cy, dist}
+# result["rms_reprojection_error"], result["per_view_rms"]
+# result["object_poses"]  # OpenGL object poses (same as solve_pnp)
+# result["views_used"]
+
+# General planar / non-square targets: shared object_points + per-view pixels
+result = auki_pnpkit.calibrate_camera(
+    object_points,   # (N, 3)
+    views,           # sequence of (N, 2) or (V, N, 2)
+    image_size=(640, 480),
+    dist_len=0,
+)
+```
+
+Defaults match the core library: `fix_aspect_ratio=True`, `dist_len=5`,
+`min_views=3`. Single-view calibration is not supported.
 
 ## Build and test (from monorepo root)
 

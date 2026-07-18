@@ -114,8 +114,90 @@ def triangulate(
     return _native.triangulate(left_pixel, right_pixel, rig)
 
 
+def calibrate_from_square_views(
+    corners: Any,
+    physical_size: float,
+    image_size: Any = None,
+    *,
+    image_width: int | None = None,
+    image_height: int | None = None,
+    fix_aspect_ratio: bool = True,
+    fix_principal_point: bool = False,
+    dist_len: int = 5,
+    min_views: int = 3,
+    max_iterations: int = 100,
+    function_tolerance: float = 1e-10,
+    rms_success_threshold: float | None = None,
+) -> dict[str, Any]:
+    """Calibrate monocular intrinsics from multi-view square-marker corners.
+
+    ``corners`` is a sequence of 4-point views (TL→TR→BR→BL) or an ``(N, 4, 2)``
+    array. Image size is ``image_size=(width, height)`` or
+    ``image_width`` / ``image_height``.
+
+    Returns a dict with ``camera`` (``fx``, ``fy``, ``cx``, ``cy``, ``dist``),
+    ``rms_reprojection_error``, ``per_view_rms``, ``object_poses`` (OpenGL),
+    and ``views_used``.
+    """
+    return _native.calibrate_from_square_views(
+        corners,
+        physical_size,
+        image_size,
+        image_width=image_width,
+        image_height=image_height,
+        fix_aspect_ratio=fix_aspect_ratio,
+        fix_principal_point=fix_principal_point,
+        dist_len=dist_len,
+        min_views=min_views,
+        max_iterations=max_iterations,
+        function_tolerance=function_tolerance,
+        rms_success_threshold=rms_success_threshold,
+    )
+
+
+def calibrate_camera(
+    object_points: Any,
+    views: Any,
+    image_size: Any = None,
+    *,
+    image_width: int | None = None,
+    image_height: int | None = None,
+    fix_aspect_ratio: bool = True,
+    fix_principal_point: bool = False,
+    dist_len: int = 5,
+    min_views: int = 3,
+    max_iterations: int = 100,
+    function_tolerance: float = 1e-10,
+    rms_success_threshold: float | None = None,
+) -> dict[str, Any]:
+    """Multi-view monocular calibration from shared 3D object points.
+
+    ``object_points`` is ``(N, 3)`` (or a sequence of vector3). ``views`` is a
+    sequence of ``(N, 2)`` image-point lists (same order every view), or a
+    ``(V, N, 2)`` array. Image size as for :func:`calibrate_from_square_views`.
+
+    Returned pose convention matches :func:`solve_pnp` (OpenGL object poses).
+    """
+    return _native.calibrate_camera(
+        object_points,
+        views,
+        image_size,
+        image_width=image_width,
+        image_height=image_height,
+        fix_aspect_ratio=fix_aspect_ratio,
+        fix_principal_point=fix_principal_point,
+        dist_len=dist_len,
+        min_views=min_views,
+        max_iterations=max_iterations,
+        function_tolerance=function_tolerance,
+        rms_success_threshold=rms_success_threshold,
+    )
+
+
 __all__ = [
     "__version__",
+    "calibrate_camera",
+    "calibrate_from_square_views",
     "camera_pose_from_solve_pnp_pose",
     "estimate_square_pose_from_pixels",
     "estimate_square_pose_from_rays",

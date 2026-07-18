@@ -1,16 +1,19 @@
 //! Native Python/NumPy bindings for PnPKit.
 
-use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pnp_core::{
+    calibrate_camera as core_calibrate_camera,
+    calibrate_from_square_views as core_calibrate_from_square_views,
     camera_pose_from_solve_pnp_pose as core_camera_pose_from_solve_pnp_pose,
     estimate_square_pose_from_pixels as core_estimate_square_pose_from_pixels,
     estimate_square_pose_from_rays as core_estimate_square_pose_from_rays,
     solve_pnp as core_solve_pnp, solve_pnp_camera_pose as core_solve_pnp_camera_pose,
     solve_pnp_stereo as core_solve_pnp_stereo,
     solve_pnp_stereo_camera_pose as core_solve_pnp_stereo_camera_pose,
-    triangulate_midpoint as core_triangulate_midpoint, Camera, Landmark, LandmarkObservation,
-    Matrix3x3, PnpError, Pose, Quaternion, Ray3, SolvePnpMethod, SquarePoseEstimate,
-    StereoLandmarkObservation, StereoRig, Vector2, Vector3,
+    triangulate_midpoint as core_triangulate_midpoint, CalibrateOptions, CalibrationResult,
+    CalibrationView, Camera, Landmark, LandmarkObservation, Matrix3x3, PnpError, Pose, Quaternion,
+    Ray3, SolvePnpMethod, SquarePoseEstimate, StereoLandmarkObservation, StereoRig, Vector2,
+    Vector3,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -586,6 +589,242 @@ fn estimate_to_py<'py>(
     Ok(dict)
 }
 
+fn camera_to_py<'py>(py: Python<'py>, camera: &Camera) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("fx", camera.fx)?;
+    dict.set_item("fy", camera.fy)?;
+    dict.set_item("cx", camera.cx)?;
+    dict.set_item("cy", camera.cy)?;
+    let dist = PyList::new(py, camera.dist.as_slice())?;
+    dict.set_item("dist", dist)?;
+    Ok(dict)
+}
+
+fn calibration_result_to_py<'py>(
+    py: Python<'py>,
+    result: &CalibrationResult,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("camera", camera_to_py(py, &result.camera)?)?;
+    dict.set_item("rms_reprojection_error", result.rms_reprojection_error)?;
+    let per_view = PyList::new(py, result.per_view_rms.as_slice())?;
+    dict.set_item("per_view_rms", per_view)?;
+    let poses = PyList::empty(py);
+    for pose in &result.object_poses {
+        poses.append(pose_to_py(py, pose)?)?;
+    }
+    dict.set_item("object_poses", poses)?;
+    dict.set_item("views_used", result.views_used)?;
+    Ok(dict)
+}
+
+/// Resolve image dimensions from either `image_size=(w,h)` or explicit
+/// `image_width` / `image_height`. Prefer `image_size` when both are given.
+fn resolve_image_size(
+    image_size: Option<&Bound<'_, PyAny>>,
+    image_width: Option<u32>,
+    image_height: Option<u32>,
+) -> PyResult<(u32, u32)> {
+    if let Some(size) = image_size {
+        if size.is_none() {
+            // fall through
+        } else {
+            let seq = size.cast::<PySequence>().map_err(|_| {
+                PyTypeError::new_err("image_size must be a length-2 sequence (width, height)")
+            })?;
+            if seq.len()? != 2 {
+                return Err(PyValueError::new_err(format!(
+                    "image_size must have length 2, got {}",
+                    seq.len()?
+                )));
+            }
+            let w = as_f64(&seq.get_item(0)?)?;
+            let h = as_f64(&seq.get_item(1)?)?;
+            if !w.is_finite() || !h.is_finite() || w < 2.0 || h < 2.0 {
+                return Err(PyValueError::new_err(
+                    "image_size width/height must be finite and >= 2",
+                ));
+            }
+            return Ok((w as u32, h as u32));
+        }
+    }
+    match (image_width, image_height) {
+        (Some(w), Some(h)) => {
+            if w < 2 || h < 2 {
+                return Err(PyValueError::new_err(
+                    "image_width and image_height must be >= 2",
+                ));
+            }
+            Ok((w, h))
+        }
+        _ => Err(PyValueError::new_err(
+            "provide image_size=(width, height) or both image_width and image_height",
+        )),
+    }
+}
+
+fn build_calibrate_options(
+    fix_aspect_ratio: bool,
+    fix_principal_point: bool,
+    dist_len: usize,
+    min_views: usize,
+    max_iterations: usize,
+    function_tolerance: f64,
+    rms_success_threshold: Option<f64>,
+) -> PyResult<CalibrateOptions> {
+    if !function_tolerance.is_finite() || function_tolerance <= 0.0 {
+        return Err(PyValueError::new_err(
+            "function_tolerance must be a finite positive number",
+        ));
+    }
+    if let Some(t) = rms_success_threshold {
+        if !t.is_finite() || t < 0.0 {
+            return Err(PyValueError::new_err(
+                "rms_success_threshold must be a finite non-negative number",
+            ));
+        }
+    }
+    Ok(CalibrateOptions {
+        min_views,
+        fix_aspect_ratio,
+        fix_principal_point,
+        dist_len,
+        max_iterations,
+        function_tolerance,
+        rms_success_threshold,
+    })
+}
+
+/// Parse multi-view square corners: `(N, 4, 2)` ndarray or sequence of 4-point views.
+fn parse_square_corners_views(value: &Bound<'_, PyAny>) -> PyResult<Vec<[Vector2; 4]>> {
+    if let Ok(array) = value.extract::<PyReadonlyArray3<'_, f64>>() {
+        let shape = array.shape();
+        if shape.len() != 3 || shape[1] != 4 || shape[2] != 2 {
+            return Err(PyValueError::new_err(format!(
+                "corners ndarray must have shape (N, 4, 2), got {:?}",
+                shape
+            )));
+        }
+        let view = array.as_array();
+        let mut out = Vec::with_capacity(shape[0]);
+        for i in 0..shape[0] {
+            out.push([
+                Vector2::new(view[[i, 0, 0]], view[[i, 0, 1]]),
+                Vector2::new(view[[i, 1, 0]], view[[i, 1, 1]]),
+                Vector2::new(view[[i, 2, 0]], view[[i, 2, 1]]),
+                Vector2::new(view[[i, 3, 0]], view[[i, 3, 1]]),
+            ]);
+        }
+        return Ok(out);
+    }
+
+    let seq = value.cast::<PySequence>().map_err(|_| {
+        PyTypeError::new_err("corners must be a sequence of 4-point views or an (N, 4, 2) ndarray")
+    })?;
+    let mut out = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        out.push(parse_pixels4(&seq.get_item(i)?)?);
+    }
+    Ok(out)
+}
+
+/// Parse object points as `(N, 3)` ndarray or sequence of vector3.
+fn parse_object_points(value: &Bound<'_, PyAny>) -> PyResult<Vec<Vector3>> {
+    if let Ok(array) = value.extract::<PyReadonlyArray2<'_, f64>>() {
+        let shape = array.shape();
+        if shape.len() != 2 || shape[1] != 3 {
+            return Err(PyValueError::new_err(format!(
+                "object_points must have shape (N, 3), got {:?}",
+                shape
+            )));
+        }
+        let view = array.as_array();
+        let mut pts = Vec::with_capacity(shape[0]);
+        for row in view.outer_iter() {
+            pts.push(Vector3::new(row[0], row[1], row[2]));
+        }
+        return Ok(pts);
+    }
+
+    let seq = value.cast::<PySequence>().map_err(|_| {
+        PyTypeError::new_err("object_points must be a sequence of vector3 or an (N, 3) ndarray")
+    })?;
+    let mut pts = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        pts.push(parse_vector3(&seq.get_item(i)?)?);
+    }
+    Ok(pts)
+}
+
+/// Parse one calibration view's image points: `(N, 2)` or sequence of vector2,
+/// or a mapping with `image_points`.
+fn parse_image_points(value: &Bound<'_, PyAny>) -> PyResult<Vec<Vector2>> {
+    if let Some(inner) = mapping_get(value, "image_points")? {
+        return parse_image_points(&inner);
+    }
+
+    if let Ok(array) = value.extract::<PyReadonlyArray2<'_, f64>>() {
+        let shape = array.shape();
+        if shape.len() != 2 || shape[1] != 2 {
+            return Err(PyValueError::new_err(format!(
+                "view image_points must have shape (N, 2), got {:?}",
+                shape
+            )));
+        }
+        let view = array.as_array();
+        let mut pts = Vec::with_capacity(shape[0]);
+        for row in view.outer_iter() {
+            pts.push(Vector2::new(row[0], row[1]));
+        }
+        return Ok(pts);
+    }
+
+    let seq = value.cast::<PySequence>().map_err(|_| {
+        PyTypeError::new_err(
+            "each calibration view must be a sequence of image points, an (N, 2) ndarray, or a mapping with image_points",
+        )
+    })?;
+    let mut pts = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        pts.push(parse_vector2(&seq.get_item(i)?)?);
+    }
+    Ok(pts)
+}
+
+/// Parse multi-view calibration views: sequence of image-point lists, or `(V, N, 2)` ndarray.
+fn parse_calibration_views(value: &Bound<'_, PyAny>) -> PyResult<Vec<CalibrationView>> {
+    if let Ok(array) = value.extract::<PyReadonlyArray3<'_, f64>>() {
+        let shape = array.shape();
+        if shape.len() != 3 || shape[2] != 2 {
+            return Err(PyValueError::new_err(format!(
+                "views ndarray must have shape (V, N, 2), got {:?}",
+                shape
+            )));
+        }
+        let view = array.as_array();
+        let mut out = Vec::with_capacity(shape[0]);
+        for v in 0..shape[0] {
+            let mut image_points = Vec::with_capacity(shape[1]);
+            for n in 0..shape[1] {
+                image_points.push(Vector2::new(view[[v, n, 0]], view[[v, n, 1]]));
+            }
+            out.push(CalibrationView { image_points });
+        }
+        return Ok(out);
+    }
+
+    let seq = value.cast::<PySequence>().map_err(|_| {
+        PyTypeError::new_err("views must be a sequence of image-point lists or a (V, N, 2) ndarray")
+    })?;
+    let mut out = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        out.push(CalibrationView {
+            image_points: parse_image_points(&seq.get_item(i)?)?,
+        });
+    }
+    Ok(out)
+}
+
 #[pyfunction]
 #[pyo3(signature = (landmarks, observations, camera, method = "iterative"))]
 fn solve_pnp<'py>(
@@ -727,6 +966,113 @@ fn triangulate<'py>(
     vector3_to_py(py, &point)
 }
 
+/// Multi-view monocular calibration from arbitrary shared object points.
+#[pyfunction]
+#[pyo3(signature = (
+    object_points,
+    views,
+    image_size = None,
+    *,
+    image_width = None,
+    image_height = None,
+    fix_aspect_ratio = true,
+    fix_principal_point = false,
+    dist_len = 5,
+    min_views = 3,
+    max_iterations = 100,
+    function_tolerance = 1e-10,
+    rms_success_threshold = None,
+))]
+fn calibrate_camera<'py>(
+    py: Python<'py>,
+    object_points: &Bound<'py, PyAny>,
+    views: &Bound<'py, PyAny>,
+    image_size: Option<&Bound<'py, PyAny>>,
+    image_width: Option<u32>,
+    image_height: Option<u32>,
+    fix_aspect_ratio: bool,
+    fix_principal_point: bool,
+    dist_len: usize,
+    min_views: usize,
+    max_iterations: usize,
+    function_tolerance: f64,
+    rms_success_threshold: Option<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (w, h) = resolve_image_size(image_size, image_width, image_height)?;
+    let options = build_calibrate_options(
+        fix_aspect_ratio,
+        fix_principal_point,
+        dist_len,
+        min_views,
+        max_iterations,
+        function_tolerance,
+        rms_success_threshold,
+    )?;
+    let object_points = parse_object_points(object_points)?;
+    let views = parse_calibration_views(views)?;
+    let result = py
+        .detach(move || core_calibrate_camera(&object_points, &views, w, h, &options))
+        .map_err(pnp_error)?;
+    calibration_result_to_py(py, &result)
+}
+
+/// Calibrate from multiple views of a square marker (QR / planar quad corners).
+///
+/// `corners` is a sequence of 4-point views (TL→TR→BR→BL) or an `(N, 4, 2)`
+/// ndarray. Image size via `image_size=(w, h)` or `image_width`/`image_height`.
+#[pyfunction]
+#[pyo3(signature = (
+    corners,
+    physical_size,
+    image_size = None,
+    *,
+    image_width = None,
+    image_height = None,
+    fix_aspect_ratio = true,
+    fix_principal_point = false,
+    dist_len = 5,
+    min_views = 3,
+    max_iterations = 100,
+    function_tolerance = 1e-10,
+    rms_success_threshold = None,
+))]
+fn calibrate_from_square_views<'py>(
+    py: Python<'py>,
+    corners: &Bound<'py, PyAny>,
+    physical_size: f64,
+    image_size: Option<&Bound<'py, PyAny>>,
+    image_width: Option<u32>,
+    image_height: Option<u32>,
+    fix_aspect_ratio: bool,
+    fix_principal_point: bool,
+    dist_len: usize,
+    min_views: usize,
+    max_iterations: usize,
+    function_tolerance: f64,
+    rms_success_threshold: Option<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    if !physical_size.is_finite() || physical_size <= 0.0 {
+        return Err(PyValueError::new_err(
+            "physical_size must be a finite positive number",
+        ));
+    }
+    let (w, h) = resolve_image_size(image_size, image_width, image_height)?;
+    let options = build_calibrate_options(
+        fix_aspect_ratio,
+        fix_principal_point,
+        dist_len,
+        min_views,
+        max_iterations,
+        function_tolerance,
+        rms_success_threshold,
+    )?;
+    let corners = parse_square_corners_views(corners)?;
+    let result = py
+        .detach(move || core_calibrate_from_square_views(&corners, physical_size, w, h, &options))
+        .map_err(pnp_error)?;
+    calibration_result_to_py(py, &result)
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", VERSION)?;
@@ -738,5 +1084,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(solve_pnp_stereo, module)?)?;
     module.add_function(wrap_pyfunction!(solve_pnp_stereo_camera_pose, module)?)?;
     module.add_function(wrap_pyfunction!(triangulate, module)?)?;
+    module.add_function(wrap_pyfunction!(calibrate_camera, module)?)?;
+    module.add_function(wrap_pyfunction!(calibrate_from_square_views, module)?)?;
     Ok(())
 }

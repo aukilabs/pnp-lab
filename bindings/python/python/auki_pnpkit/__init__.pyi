@@ -60,6 +60,20 @@ class SquarePoseEstimate(TypedDict):
     normalized_corner_error: float
     ray_distances: list[float]
 
+class CalibrationCamera(TypedDict):
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    dist: list[float]
+
+class CalibrationResult(TypedDict):
+    camera: CalibrationCamera
+    rms_reprojection_error: float
+    per_view_rms: list[float]
+    object_poses: list[Pose]
+    views_used: int
+
 __version__: str
 
 def solve_pnp(
@@ -108,3 +122,35 @@ def triangulate(
     right_pixel: Vector2 | Sequence[float] | ArrayLike,
     rig: StereoRig | Mapping[str, Any],
 ) -> Vector3: ...
+
+def calibrate_from_square_views(
+    corners: Sequence[Sequence[Vector2 | Sequence[float]] | ArrayLike] | ArrayLike,
+    physical_size: float,
+    image_size: Sequence[int] | tuple[int, int] | None = ...,
+    *,
+    image_width: int | None = ...,
+    image_height: int | None = ...,
+    fix_aspect_ratio: bool = ...,
+    fix_principal_point: bool = ...,
+    dist_len: int = ...,
+    min_views: int = ...,
+    max_iterations: int = ...,
+    function_tolerance: float = ...,
+    rms_success_threshold: float | None = ...,
+) -> CalibrationResult: ...
+
+def calibrate_camera(
+    object_points: Sequence[Vector3 | Sequence[float]] | ArrayLike,
+    views: Sequence[Sequence[Vector2 | Sequence[float]] | ArrayLike | Mapping[str, Any]] | ArrayLike,
+    image_size: Sequence[int] | tuple[int, int] | None = ...,
+    *,
+    image_width: int | None = ...,
+    image_height: int | None = ...,
+    fix_aspect_ratio: bool = ...,
+    fix_principal_point: bool = ...,
+    dist_len: int = ...,
+    min_views: int = ...,
+    max_iterations: int = ...,
+    function_tolerance: float = ...,
+    rms_success_threshold: float | None = ...,
+) -> CalibrationResult: ...
