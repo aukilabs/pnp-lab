@@ -56,6 +56,11 @@ impl StereoRig {
     pub fn baseline_length(&self) -> f64 {
         self.right_from_left.position.length()
     }
+
+    /// Convert to a two-view [`MultiViewRig`] (left = primary).
+    pub fn to_multiview(&self) -> crate::multiview::MultiViewRig {
+        crate::multiview::MultiViewRig::from_stereo(self)
+    }
 }
 
 #[cfg(test)]
