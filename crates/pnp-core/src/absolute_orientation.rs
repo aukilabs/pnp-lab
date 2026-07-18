@@ -4,9 +4,7 @@
 //! onto destination points in the least-squares sense:
 //! `R * src_i + t ≈ dst_i`.
 
-use crate::types::{
-    rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Vector3,
-};
+use crate::types::{rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Vector3};
 use nalgebra::{Matrix3, Vector3 as NaVector3};
 
 /// Minimum number of correspondences.
@@ -50,8 +48,16 @@ pub fn absolute_orientation(src: &[Vector3], dst: &[Vector3]) -> Result<Pose, Pn
     // so that y ≈ R x with R from SVD(H).
     let mut h = Matrix3::<f64>::zeros();
     for i in 0..n {
-        let xs = NaVector3::new(src[i].x - mu_src.x, src[i].y - mu_src.y, src[i].z - mu_src.z);
-        let yd = NaVector3::new(dst[i].x - mu_dst.x, dst[i].y - mu_dst.y, dst[i].z - mu_dst.z);
+        let xs = NaVector3::new(
+            src[i].x - mu_src.x,
+            src[i].y - mu_src.y,
+            src[i].z - mu_src.z,
+        );
+        let yd = NaVector3::new(
+            dst[i].x - mu_dst.x,
+            dst[i].y - mu_dst.y,
+            dst[i].z - mu_dst.z,
+        );
         h += yd * xs.transpose();
     }
 
@@ -246,10 +252,7 @@ mod tests {
             Vector3::new(1.0, 0.0, 0.0),
             Vector3::new(0.0, 1.0, 0.0),
         ];
-        let dst = [
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-        ];
+        let dst = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)];
         assert_eq!(
             absolute_orientation(&src, &dst).unwrap_err(),
             PnpError::MismatchedCounts

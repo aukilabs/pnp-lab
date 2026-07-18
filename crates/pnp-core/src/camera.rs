@@ -165,11 +165,7 @@ impl Camera {
         let p = self.undistort_pixel(pixel);
         Ray3 {
             origin: Vector3::new(0.0, 0.0, 0.0),
-            direction: Vector3::new(
-                (p.x - self.cx) / self.fx,
-                (p.y - self.cy) / self.fy,
-                1.0,
-            ),
+            direction: Vector3::new((p.x - self.cx) / self.fx, (p.y - self.cy) / self.fy, 1.0),
         }
     }
 

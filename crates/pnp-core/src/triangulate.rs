@@ -37,7 +37,8 @@ pub fn triangulate_midpoint(
     // direction = R * d_right (rotate free vector only)
     let o_r = rig.right_from_left.position;
     let rot_only = Pose::new(Vector3::new(0.0, 0.0, 0.0), rig.right_from_left.rotation);
-    let d_r = normalize(transform_point(&rot_only, ray_r.direction)).ok_or(PnpError::SolverFailed)?;
+    let d_r =
+        normalize(transform_point(&rot_only, ray_r.direction)).ok_or(PnpError::SolverFailed)?;
 
     skew_line_midpoint(o_l, d_l, o_r, d_r)
 }
@@ -152,7 +153,7 @@ mod tests {
         let _p = Vector3::new(0.0, 0.0, 2.0);
         // Project with pinhole OpenCV: u = fx*X/Z+cx, v = fy*Y/Z+cy
         let ul = Vector2::new(320.0, 240.0); // principal point for (0,0,2)
-        // In right camera: X_r = X_l - 0.1 => (-0.1, 0, 2)
+                                             // In right camera: X_r = X_l - 0.1 => (-0.1, 0, 2)
         let ur = Vector2::new(500.0 * (-0.1) / 2.0 + 320.0, 240.0);
 
         let est = triangulate_midpoint(&rig, ul, ur).unwrap();

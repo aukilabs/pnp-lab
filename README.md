@@ -17,6 +17,8 @@ Expo module for React Native.
 - Three solver methods: **EPnP**, **iterative** (Levenberg–Marquardt), and **SQPnP**
 - First-class monocular `Camera` model with optional Brown–Conrady distortion
   (OpenCV coefficient order)
+- **Calibrated stereo**: `StereoRig`, joint left+right landmark PnP, midpoint
+  triangulation, and stereo square-marker pose
 - Square-marker pose from **camera rays** or **image pixels** (AR / portal
   calibration workflows)
 - `no_std` + `alloc` core for embedded and mobile targets
@@ -141,9 +143,121 @@ Useful entry points:
 |-----|---------|
 | `solve_pnp` | Object pose in OpenGL coordinates |
 | `solve_pnp_camera_pose` | Camera pose (inverse of object pose) |
+| `solve_pnp_stereo` | Object pose from stereo observations (OpenGL, left primary) |
+| `solve_pnp_stereo_camera_pose` | Stereo camera pose (inverse of object pose) |
+| `triangulate_midpoint` | 3D point in left OpenCV frame from a stereo pair |
 | `estimate_square_pose_from_rays` | Square marker from four 3D rays |
 | `estimate_square_pose_from_pixels` | Square marker from four image corners + `Camera` |
+| `estimate_square_pose_from_stereo_pixels` | Square marker from dual-eye corner pixels |
 | `Camera::project` / `undistort_pixel` / `unproject_opengl_ray` | Projection helpers |
+| `StereoRig` / `StereoLandmarkObservation` | Calibrated stereo pair and partial observations |
+
+### Stereo
+
+Calibrated stereo uses a **left-primary** rig: the left camera is the seed and
+the frame of the returned object pose. Extrinsics `right_from_left` are the
+pose of the **right** camera expressed in the **left** camera frame, stored and
+interpreted in **OpenCV** convention (`+Z` forward):
+
+```text
+X_right = R_rl * X_left + t_rl
+```
+
+If product calibration is OpenGL, convert extrinsics with
+`pose_tools::from_opengl_to_opencv` before building the rig (or pass OpenCV
+poses only).
+
+```rust
+use pnp_core::{
+    solve_pnp_stereo, triangulate_midpoint, Camera, Landmark, Pose, Quaternion,
+    SolvePnpMethod, StereoLandmarkObservation, StereoRig, Vector2, Vector3,
+};
+
+fn stereo_example() -> Result<pnp_core::Pose, pnp_core::PnpError> {
+    let left = Camera::pinhole(800.0, 800.0, 320.0, 240.0)?;
+    let right = left.clone();
+    // 12 cm horizontal baseline; right_from_left in OpenCV frame.
+    let right_from_left = Pose::new(
+        Vector3::new(0.12, 0.0, 0.0),
+        Quaternion::identity(),
+    );
+    let rig = StereoRig::new(left, right, right_from_left)?;
+
+    let landmarks = vec![
+        Landmark {
+            id: "0".into(),
+            position: Vector3::new(-0.1, -0.1, 0.0),
+        },
+        Landmark {
+            id: "1".into(),
+            position: Vector3::new(0.1, -0.1, 0.0),
+        },
+        Landmark {
+            id: "2".into(),
+            position: Vector3::new(0.1, 0.1, 0.0),
+        },
+        Landmark {
+            id: "3".into(),
+            position: Vector3::new(-0.1, 0.1, 0.0),
+        },
+    ];
+    // Matched by id. Either eye may be missing (partial observations).
+    let observations = vec![
+        StereoLandmarkObservation {
+            id: "0".into(),
+            left: Some(Vector2::new(220.0, 140.0)),
+            right: Some(Vector2::new(200.0, 140.0)),
+        },
+        StereoLandmarkObservation {
+            id: "1".into(),
+            left: Some(Vector2::new(420.0, 140.0)),
+            right: None, // right eye occluded for this landmark
+        },
+        StereoLandmarkObservation {
+            id: "2".into(),
+            left: Some(Vector2::new(420.0, 340.0)),
+            right: Some(Vector2::new(400.0, 340.0)),
+        },
+        StereoLandmarkObservation {
+            id: "3".into(),
+            left: Some(Vector2::new(220.0, 340.0)),
+            right: Some(Vector2::new(200.0, 340.0)),
+        },
+    ];
+
+    // Object pose in OpenGL, primary view = left (same as mono solve_pnp).
+    let pose = solve_pnp_stereo(
+        &landmarks,
+        &observations,
+        &rig,
+        SolvePnpMethod::Iterative,
+    )?;
+
+    // Single correspondence → 3D in the left OpenCV camera frame.
+    let _point = triangulate_midpoint(
+        &rig,
+        Vector2::new(320.0, 240.0),
+        Vector2::new(295.0, 240.0),
+    )?;
+
+    Ok(pose)
+}
+```
+
+Pipeline notes:
+
+| Topic | Behavior |
+|-------|----------|
+| Seed | Monocular PnP on **left** observations only (enough left points required) |
+| Refine | Joint LM over left + right reprojection residuals (OpenCV internals) |
+| Partial observations | Missing left or right pixels are skipped in the residual |
+| Public pose | **OpenGL** object pose, left primary (same meaning as `solve_pnp`) |
+| Triangulation | Midpoint of skew rays → left **OpenCV** 3D point |
+| Square stereo | `estimate_square_pose_from_stereo_pixels` triangulates corners then fits |
+
+C and Python expose the same stereo surface (`peyote_pnp_solve_stereo` /
+`peyote_pnp_triangulate`, and `auki_pnpkit.solve_pnp_stereo` /
+`triangulate`). See [bindings/python/README.md](bindings/python/README.md).
 
 ### Python
 
@@ -230,11 +344,15 @@ See [bindings/README.md](bindings/README.md) and
 | Topic | Convention |
 |-------|------------|
 | Image pixels | OpenCV-style: origin top-left, +X right, +Y down |
-| `solve_pnp` result | **OpenGL** object pose (Y-up, Z-backward) |
+| `solve_pnp` / `solve_pnp_stereo` result | **OpenGL** object pose (Y-up, Z-backward) |
+| Stereo primary frame | **Left** camera (seed, returned pose, triangulation origin) |
+| `StereoRig.right_from_left` | Pose of right in left frame, **OpenCV** convention |
 | Algebraic solvers (internal) | OpenCV camera frame (+Z forward) then converted |
 | Distortion | OpenCV Brown–Conrady / rational: `k1,k2,p1,p2[,k3[,k4,k5,k6]]` |
 | Square corners | Top-left → top-right → bottom-right → bottom-left |
 | OpenGL rays from pixels | `x=(u-cx)/fx`, `y=-(v-cy)/fy`, `z=-1` after optional undistort |
+| OpenCV rays (stereo / triangulate) | `x=(u-cx)/fx`, `y=(v-cy)/fy`, `z=1` after optional undistort |
+| `triangulate_midpoint` output | Left camera **OpenCV** frame (+Z forward) |
 
 ## Repository layout
 

@@ -201,10 +201,14 @@ fn partial_right_views_still_recover() {
 ///
 /// `right` / `up` are the marker's local +X / +Y axes expressed in left OpenCV
 /// coordinates (for a frontal marker facing the camera, up ≈ (0, −1, 0)).
-fn stereo_square_corners_cv(center: Vector3, right: Vector3, up: Vector3, half: f64) -> [Vector3; 4] {
-    let scale_add = |a: Vector3, s: f64, b: Vector3| {
-        Vector3::new(a.x + s * b.x, a.y + s * b.y, a.z + s * b.z)
-    };
+fn stereo_square_corners_cv(
+    center: Vector3,
+    right: Vector3,
+    up: Vector3,
+    half: f64,
+) -> [Vector3; 4] {
+    let scale_add =
+        |a: Vector3, s: f64, b: Vector3| Vector3::new(a.x + s * b.x, a.y + s * b.y, a.z + s * b.z);
     let corner = |sr: f64, su: f64| {
         let mut p = center;
         p = scale_add(p, sr * half, right);
@@ -219,7 +223,10 @@ fn stereo_square_corners_cv(center: Vector3, right: Vector3, up: Vector3, half: 
     ]
 }
 
-fn project_corners_stereo(corners_left: &[Vector3; 4], rig: &StereoRig) -> ([Vector2; 4], [Vector2; 4]) {
+fn project_corners_stereo(
+    corners_left: &[Vector3; 4],
+    rig: &StereoRig,
+) -> ([Vector2; 4], [Vector2; 4]) {
     // Triangulation treats `right_from_left` as the right camera's pose in the left
     // frame: X_left = R * X_right + t, so X_right = Rᵀ (X_left − t).
     // (Stereo PnP residuals use the inverse convention for the same field; fixtures
@@ -353,7 +360,11 @@ fn stereo_square_pose_recovers_tilted_marker() {
     )
     .length();
     assert!(pos_err < 1e-3, "tilted pos err {}", pos_err);
-    assert!(estimate.confidence > 0.9, "confidence {}", estimate.confidence);
+    assert!(
+        estimate.confidence > 0.9,
+        "confidence {}",
+        estimate.confidence
+    );
     assert!(
         estimate.normalized_corner_error < 1e-4,
         "corner error {}",

@@ -68,14 +68,19 @@ cargo install cargo-component
 ### Module boundaries
 
 - **`pnp-core`**: pure solvers and types. Must stay `no_std` + `alloc` (use
-  `libm` for math, not `std`).
+  `libm` for math, not `std`). Stereo lives here as well:
+  `stereo` (`StereoRig`), `stereo_solve`, `triangulate`,
+  `absolute_orientation`, plus stereo square helpers in `square_pose`.
+  Stereo internals use OpenCV frames; public `solve_pnp_stereo*` returns
+  OpenGL (left primary), matching mono.
 - **`pnp-ffi`**: `#[repr(C)]` types and `extern "C"` entry points only; no
-  heavy logic beyond conversion.
-- **`pnp-wasm`**: WIT world + thin conversion to core.
+  heavy logic beyond conversion (includes stereo rig / solve / triangulate).
+- **`pnp-wasm`**: WIT world + thin conversion to core (mono only today; no
+  stereo WIT exports yet).
 - **`bindings/python`**: PyO3 facade; prefer validating shapes in Python and
-  keeping solvers in Rust.
+  keeping solvers in Rust (stereo: `solve_pnp_stereo`, `triangulate`).
 - **`bindings/expo-pnp`**: TypeScript API + platform glue; natives are built
-  with `just expo-native`.
+  with `just expo-native` (no dual-camera stereo product wiring yet).
 
 ### Style and documentation
 

@@ -36,11 +36,7 @@ pub struct StereoLandmarkObservation {
 }
 
 impl StereoRig {
-    pub fn new(
-        left: Camera,
-        right: Camera,
-        right_from_left: Pose,
-    ) -> Result<Self, PnpError> {
+    pub fn new(left: Camera, right: Camera, right_from_left: Pose) -> Result<Self, PnpError> {
         let baseline = right_from_left.position.length();
         if !baseline.is_finite() || baseline < MIN_BASELINE {
             return Err(PnpError::SolverFailed);

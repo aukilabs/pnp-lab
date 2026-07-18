@@ -280,7 +280,9 @@ unsafe fn read_landmarks_observations(
 
 /// # Safety
 /// Camera `dist` buffers in `rig` must satisfy the same rules as `pnp_camera_t`.
-unsafe fn ffi_stereo_rig_to_core(rig: &pnp_stereo_rig_t) -> Result<pnp_core::StereoRig, pnp_error_t> {
+unsafe fn ffi_stereo_rig_to_core(
+    rig: &pnp_stereo_rig_t,
+) -> Result<pnp_core::StereoRig, pnp_error_t> {
     let left = ffi_camera_to_core(&rig.left)?;
     let right = ffi_camera_to_core(&rig.right)?;
     let right_from_left = ffi_pose_to_core(&rig.right_from_left);
@@ -947,8 +949,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let result =
-            unsafe { peyote_pnp_triangulate(left, right, std::ptr::null(), &mut out) };
+        let result = unsafe { peyote_pnp_triangulate(left, right, std::ptr::null(), &mut out) };
         assert!(matches!(result.error, pnp_error_t::PNP_ERROR_NULL_POINTER));
     }
 
@@ -1005,8 +1006,7 @@ mod tests {
         let t = [0.02_f64, -0.01, 1.5];
         let rot = pnp_core::rodrigues::rvec_to_rotation_matrix(&rvec);
         let q = pnp_core::types::rotation_matrix_to_quaternion(&rot);
-        let cv_pose =
-            pnp_core::Pose::new(pnp_core::Vector3::new(t[0], t[1], t[2]), q);
+        let cv_pose = pnp_core::Pose::new(pnp_core::Vector3::new(t[0], t[1], t[2]), q);
         let gl_true = pnp_core::pose_tools::from_opencv_to_opengl(&cv_pose);
 
         let mut observations = Vec::with_capacity(4);

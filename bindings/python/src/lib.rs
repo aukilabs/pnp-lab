@@ -705,9 +705,7 @@ fn solve_pnp_stereo_camera_pose<'py>(
     let rig = parse_stereo_rig(rig)?;
     let method = parse_method(method)?;
     let pose = py
-        .detach(move || {
-            core_solve_pnp_stereo_camera_pose(&landmarks, &observations, &rig, method)
-        })
+        .detach(move || core_solve_pnp_stereo_camera_pose(&landmarks, &observations, &rig, method))
         .map_err(pnp_error)?;
     pose_to_py(py, &pose)
 }
