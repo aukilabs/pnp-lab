@@ -1,12 +1,17 @@
 //! # pnp-core
 //!
 //! Pure-Rust [Perspective-n-Point](https://en.wikipedia.org/wiki/Perspective-n-Point)
-//! solvers for monocular pose estimation.
+//! solvers for monocular, stereo, and multi-view pose estimation.
 //!
 //! ## Capabilities
 //!
 //! - Classic PnP from 3D landmarks and 2D image observations
 //!   ([`solve_pnp`], [`solve_pnp_camera_pose`])
+//! - Multi-view joint PnP for N ≥ 1 calibrated views
+//!   ([`MultiViewRig`], [`solve_pnp_multiview`], [`solve_pnp_multiview_camera_pose`])
+//! - Calibrated stereo as N=2 multiview
+//!   ([`StereoRig`], [`solve_pnp_stereo`], [`solve_pnp_stereo_camera_pose`],
+//!   [`triangulate_midpoint`])
 //! - Square-marker pose from four corner rays or image pixels
 //!   ([`estimate_square_pose_from_rays`], [`estimate_square_pose_from_pixels`],
 //!   [`estimate_square_pose_from_stereo_pixels`])
@@ -18,7 +23,9 @@
 //! |-------|------------|
 //! | Image pixels | OpenCV: origin top-left, +X right, +Y down |
 //! | Algebraic solvers | OpenCV camera frame (+Z forward) |
-//! | [`solve_pnp`] result | **OpenGL** object pose (Y-up, Z-backward) |
+//! | [`solve_pnp`] / [`solve_pnp_multiview`] / [`solve_pnp_stereo`] result | **OpenGL** object pose (Y-up, Z-backward) |
+//! | Multi-view primary | [`MultiViewRig`] `views[0]`; per-view `from_primary` is OpenCV |
+//! | Stereo primary | Left camera; `right_from_left` is OpenCV (= multiview `from_primary`) |
 //! | Distortion coeffs | OpenCV order `k1,k2,p1,p2[,k3[,k4,k5,k6]]` |
 //! | Square corners | TL → TR → BR → BL |
 //!
@@ -59,13 +66,13 @@ pub mod absolute_orientation;
 pub mod camera;
 pub mod epnp;
 pub mod iterative;
+pub mod multiview;
+pub mod multiview_solve;
 pub mod pose_tools;
 pub mod rodrigues;
 pub mod solve;
 pub mod sqpnp;
 pub mod square_pose;
-pub mod multiview;
-pub mod multiview_solve;
 pub mod stereo;
 pub mod stereo_solve;
 pub mod triangulate;

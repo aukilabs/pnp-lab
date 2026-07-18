@@ -86,9 +86,7 @@ mod tests {
     use crate::camera::Camera;
     use crate::pose_tools::{self, transform_point};
     use crate::rodrigues;
-    use crate::types::{
-        rotation_matrix_to_quaternion, Matrix3x3, Quaternion, Vector2, Vector3,
-    };
+    use crate::types::{rotation_matrix_to_quaternion, Matrix3x3, Quaternion, Vector2, Vector3};
     use alloc::string::ToString;
     use nalgebra::Vector3 as NaVector3;
 
@@ -139,10 +137,7 @@ mod tests {
     }
 
     fn project_pinhole(cam: &Camera, pc: Vector3) -> Vector2 {
-        Vector2::new(
-            cam.fx * pc.x / pc.z + cam.cx,
-            cam.fy * pc.y / pc.z + cam.cy,
-        )
+        Vector2::new(cam.fx * pc.x / pc.z + cam.cx, cam.fy * pc.y / pc.z + cam.cy)
     }
 
     fn transform_object_to_left(rvec: &[f64; 3], tvec: &NaVector3<f64>, pw: Vector3) -> Vector3 {

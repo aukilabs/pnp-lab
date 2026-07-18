@@ -68,17 +68,21 @@ cargo install cargo-component
 ### Module boundaries
 
 - **`pnp-core`**: pure solvers and types. Must stay `no_std` + `alloc` (use
-  `libm` for math, not `std`). Stereo lives here as well:
-  `stereo` (`StereoRig`), `stereo_solve`, `triangulate`,
-  `absolute_orientation`, plus stereo square helpers in `square_pose`.
-  Stereo internals use OpenCV frames; public `solve_pnp_stereo*` returns
-  OpenGL (left primary), matching mono.
+  `libm` for math, not `std`). Multi-view is the general joint solver:
+  `multiview` (`MultiViewRig`, `CameraView`, `MultiViewObservation`),
+  `multiview_solve` (`solve_pnp_multiview*`). Stereo is N=2:
+  `stereo` (`StereoRig`), `stereo_solve` (thin wrappers over multiview),
+  `triangulate`, `absolute_orientation`, plus stereo square helpers in
+  `square_pose`. Internals use OpenCV frames; public multiview/stereo
+  poses return OpenGL (primary / left), matching mono.
 - **`pnp-ffi`**: `#[repr(C)]` types and `extern "C"` entry points only; no
-  heavy logic beyond conversion (includes stereo rig / solve / triangulate).
+  heavy logic beyond conversion (includes stereo rig / solve / triangulate;
+  no multiview C API yet).
 - **`pnp-wasm`**: WIT world + thin conversion to core (mono only today; no
-  stereo WIT exports yet).
+  stereo/multiview WIT exports yet).
 - **`bindings/python`**: PyO3 facade; prefer validating shapes in Python and
-  keeping solvers in Rust (stereo: `solve_pnp_stereo`, `triangulate`).
+  keeping solvers in Rust (stereo: `solve_pnp_stereo`, `triangulate`; no
+  multiview Python API yet).
 - **`bindings/expo-pnp`**: TypeScript API + platform glue; natives are built
   with `just expo-native` (no dual-camera stereo product wiring yet).
 

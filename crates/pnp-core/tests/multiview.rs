@@ -241,8 +241,7 @@ fn multiview_n2_matches_stereo_api() {
         SolvePnpMethod::EPnP,
         SolvePnpMethod::SQPnP,
     ] {
-        let pose_s =
-            solve_pnp_stereo(&landmarks, &stereo_obs, &stereo, method).expect("stereo");
+        let pose_s = solve_pnp_stereo(&landmarks, &stereo_obs, &stereo, method).expect("stereo");
         let pose_m =
             solve_pnp_multiview(&landmarks, &mv_obs, &mv_rig, method).expect("multiview n2");
 
@@ -393,15 +392,9 @@ fn stereo_right_only_seeds_and_recovers() {
         o.left = None;
     }
 
-    let pose = solve_pnp_stereo(
-        &landmarks,
-        &stereo_obs,
-        &stereo,
-        SolvePnpMethod::Iterative,
-    )
-    .expect("right-only stereo should seed from right");
+    let pose = solve_pnp_stereo(&landmarks, &stereo_obs, &stereo, SolvePnpMethod::Iterative)
+        .expect("right-only stereo should seed from right");
     let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
     assert!(pos_err < 1e-3, "right-only stereo pos err {}", pos_err);
     assert!(rot_err < 1e-3, "right-only stereo rot err {} rad", rot_err);
 }
-

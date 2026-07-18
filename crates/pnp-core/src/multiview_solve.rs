@@ -491,8 +491,7 @@ mod tests {
         let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
         let obs = project_multiview_obs(&landmarks, &rig, &cv_true);
 
-        let pose =
-            solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::Iterative).unwrap();
+        let pose = solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::Iterative).unwrap();
 
         let dp = Vector3::new(
             pose.position.x - gl_true.position.x,
@@ -527,8 +526,7 @@ mod tests {
             pixels: vec![Some(Vector2::new(1.0, 1.0)), Some(Vector2::new(2.0, 2.0))],
         }];
         // Also length mismatch on landmarks vs observations
-        let err =
-            solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::EPnP).unwrap_err();
+        let err = solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::EPnP).unwrap_err();
         assert_eq!(err, PnpError::MismatchedCounts);
     }
 
@@ -539,11 +537,9 @@ mod tests {
         let cv_true = true_cv_pose();
         let obs = project_multiview_obs(&landmarks, &rig, &cv_true);
 
-        let obj =
-            solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::SQPnP).unwrap();
+        let obj = solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::SQPnP).unwrap();
         let cam =
-            solve_pnp_multiview_camera_pose(&landmarks, &obs, &rig, SolvePnpMethod::SQPnP)
-                .unwrap();
+            solve_pnp_multiview_camera_pose(&landmarks, &obs, &rig, SolvePnpMethod::SQPnP).unwrap();
         let back = pose_tools::invert_pose(&cam);
 
         let dp = Vector3::new(
