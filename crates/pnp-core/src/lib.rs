@@ -65,6 +65,7 @@ pub mod solve;
 pub mod sqpnp;
 pub mod square_pose;
 pub mod multiview;
+pub mod multiview_solve;
 pub mod stereo;
 pub mod stereo_solve;
 pub mod triangulate;
@@ -73,6 +74,7 @@ pub mod types;
 pub use absolute_orientation::absolute_orientation;
 pub use camera::Camera;
 pub use multiview::{CameraView, MultiViewObservation, MultiViewRig};
+pub use multiview_solve::{solve_pnp_multiview, solve_pnp_multiview_camera_pose};
 pub use solve::{camera_pose_from_solve_pnp_pose, solve_pnp, solve_pnp_camera_pose};
 pub use square_pose::{
     estimate_square_pose_from_pixels, estimate_square_pose_from_rays,
