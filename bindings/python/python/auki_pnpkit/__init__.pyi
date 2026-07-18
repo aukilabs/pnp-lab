@@ -40,6 +40,16 @@ class LandmarkObservation(TypedDict, total=False):
     id: str
     position: Vector2 | Sequence[float] | NDArray[np.float64]
 
+class StereoLandmarkObservation(TypedDict, total=False):
+    id: str
+    left: Vector2 | Sequence[float] | NDArray[np.float64] | None
+    right: Vector2 | Sequence[float] | NDArray[np.float64] | None
+
+class StereoRig(TypedDict):
+    left: Camera | ArrayLike | Mapping[str, Any]
+    right: Camera | ArrayLike | Mapping[str, Any]
+    right_from_left: Pose | Mapping[str, Any]
+
 class Ray(TypedDict):
     origin: Vector3 | Sequence[float] | NDArray[np.float64]
     direction: Vector3 | Sequence[float] | NDArray[np.float64]
@@ -78,3 +88,23 @@ def estimate_square_pose_from_pixels(
     physical_size: float,
     camera: Camera | ArrayLike | Mapping[str, Any],
 ) -> SquarePoseEstimate: ...
+
+def solve_pnp_stereo(
+    landmarks: Sequence[Landmark] | ArrayLike,
+    observations: Sequence[StereoLandmarkObservation],
+    rig: StereoRig | Mapping[str, Any],
+    method: Method = ...,
+) -> Pose: ...
+
+def solve_pnp_stereo_camera_pose(
+    landmarks: Sequence[Landmark] | ArrayLike,
+    observations: Sequence[StereoLandmarkObservation],
+    rig: StereoRig | Mapping[str, Any],
+    method: Method = ...,
+) -> Pose: ...
+
+def triangulate(
+    left_pixel: Vector2 | Sequence[float] | ArrayLike,
+    right_pixel: Vector2 | Sequence[float] | ArrayLike,
+    rig: StereoRig | Mapping[str, Any],
+) -> Vector3: ...

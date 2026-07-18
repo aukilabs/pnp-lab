@@ -5,9 +5,12 @@ use pnp_core::{
     camera_pose_from_solve_pnp_pose as core_camera_pose_from_solve_pnp_pose,
     estimate_square_pose_from_pixels as core_estimate_square_pose_from_pixels,
     estimate_square_pose_from_rays as core_estimate_square_pose_from_rays,
-    solve_pnp as core_solve_pnp, solve_pnp_camera_pose as core_solve_pnp_camera_pose, Camera,
-    Landmark, LandmarkObservation, Matrix3x3, PnpError, Pose, Quaternion, Ray3, SolvePnpMethod,
-    SquarePoseEstimate, Vector2, Vector3,
+    solve_pnp as core_solve_pnp, solve_pnp_camera_pose as core_solve_pnp_camera_pose,
+    solve_pnp_stereo as core_solve_pnp_stereo,
+    solve_pnp_stereo_camera_pose as core_solve_pnp_stereo_camera_pose,
+    triangulate_midpoint as core_triangulate_midpoint, Camera, Landmark, LandmarkObservation,
+    Matrix3x3, PnpError, Pose, Quaternion, Ray3, SolvePnpMethod, SquarePoseEstimate,
+    StereoLandmarkObservation, StereoRig, Vector2, Vector3,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -400,6 +403,59 @@ fn parse_camera(value: &Bound<'_, PyAny>) -> PyResult<Camera> {
     ))
 }
 
+/// Parse a [`StereoRig`] from:
+/// `{left: camera, right: camera, right_from_left: pose}`
+///
+/// `right_from_left` is the pose of the right camera in the **left** camera
+/// frame, in **OpenCV** convention (same as core).
+fn parse_stereo_rig(value: &Bound<'_, PyAny>) -> PyResult<StereoRig> {
+    let left = mapping_get(value, "left")?
+        .ok_or_else(|| PyValueError::new_err("stereo rig missing 'left'"))?;
+    let right = mapping_get(value, "right")?
+        .ok_or_else(|| PyValueError::new_err("stereo rig missing 'right'"))?;
+    let right_from_left = mapping_get(value, "right_from_left")?
+        .ok_or_else(|| PyValueError::new_err("stereo rig missing 'right_from_left'"))?;
+    StereoRig::new(
+        parse_camera(&left)?,
+        parse_camera(&right)?,
+        parse_pose(&right_from_left)?,
+    )
+    .map_err(pnp_error)
+}
+
+/// Parse stereo observations:
+/// `[{"id"?, "left": [u,v]|None, "right": [u,v]|None}, ...]`
+///
+/// Either eye may be missing/`None`; at least one projection is needed later
+/// by the solver (enforced in core).
+fn parse_stereo_observations(value: &Bound<'_, PyAny>) -> PyResult<Vec<StereoLandmarkObservation>> {
+    let seq = value.cast::<PySequence>().map_err(|_| {
+        PyTypeError::new_err(
+            "stereo observations must be a sequence of dicts with optional left/right pixels",
+        )
+    })?;
+    let mut observations = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        let item = seq.get_item(i)?;
+        let id = match mapping_get(&item, "id")? {
+            Some(id) => parse_id(&id)?,
+            None => i.to_string(),
+        };
+        // mapping_get on dicts returns Some(PyNone) when the key is present with
+        // a None value; treat that the same as a missing eye.
+        let left = match mapping_get(&item, "left")? {
+            Some(v) if !v.is_none() => Some(parse_vector2(&v)?),
+            _ => None,
+        };
+        let right = match mapping_get(&item, "right")? {
+            Some(v) if !v.is_none() => Some(parse_vector2(&v)?),
+            _ => None,
+        };
+        observations.push(StereoLandmarkObservation { id, left, right });
+    }
+    Ok(observations)
+}
+
 fn parse_pixels4(value: &Bound<'_, PyAny>) -> PyResult<[Vector2; 4]> {
     if let Ok(array) = value.extract::<PyReadonlyArray2<'_, f64>>() {
         let shape = array.shape();
@@ -616,6 +672,63 @@ fn estimate_square_pose_from_pixels<'py>(
     estimate_to_py(py, &estimate)
 }
 
+#[pyfunction]
+#[pyo3(signature = (landmarks, observations, rig, method = "iterative"))]
+fn solve_pnp_stereo<'py>(
+    py: Python<'py>,
+    landmarks: &Bound<'py, PyAny>,
+    observations: &Bound<'py, PyAny>,
+    rig: &Bound<'py, PyAny>,
+    method: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let landmarks = parse_landmarks(landmarks)?;
+    let observations = parse_stereo_observations(observations)?;
+    let rig = parse_stereo_rig(rig)?;
+    let method = parse_method(method)?;
+    let pose = py
+        .detach(move || core_solve_pnp_stereo(&landmarks, &observations, &rig, method))
+        .map_err(pnp_error)?;
+    pose_to_py(py, &pose)
+}
+
+#[pyfunction]
+#[pyo3(signature = (landmarks, observations, rig, method = "iterative"))]
+fn solve_pnp_stereo_camera_pose<'py>(
+    py: Python<'py>,
+    landmarks: &Bound<'py, PyAny>,
+    observations: &Bound<'py, PyAny>,
+    rig: &Bound<'py, PyAny>,
+    method: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let landmarks = parse_landmarks(landmarks)?;
+    let observations = parse_stereo_observations(observations)?;
+    let rig = parse_stereo_rig(rig)?;
+    let method = parse_method(method)?;
+    let pose = py
+        .detach(move || {
+            core_solve_pnp_stereo_camera_pose(&landmarks, &observations, &rig, method)
+        })
+        .map_err(pnp_error)?;
+    pose_to_py(py, &pose)
+}
+
+/// Midpoint triangulation → 3D point in the **left camera OpenCV** frame.
+#[pyfunction]
+fn triangulate<'py>(
+    py: Python<'py>,
+    left_pixel: &Bound<'py, PyAny>,
+    right_pixel: &Bound<'py, PyAny>,
+    rig: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let left_px = parse_vector2(left_pixel)?;
+    let right_px = parse_vector2(right_pixel)?;
+    let rig = parse_stereo_rig(rig)?;
+    let point = py
+        .detach(move || core_triangulate_midpoint(&rig, left_px, right_px))
+        .map_err(pnp_error)?;
+    vector3_to_py(py, &point)
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", VERSION)?;
@@ -624,5 +737,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(camera_pose_from_solve_pnp_pose, module)?)?;
     module.add_function(wrap_pyfunction!(estimate_square_pose_from_rays, module)?)?;
     module.add_function(wrap_pyfunction!(estimate_square_pose_from_pixels, module)?)?;
+    module.add_function(wrap_pyfunction!(solve_pnp_stereo, module)?)?;
+    module.add_function(wrap_pyfunction!(solve_pnp_stereo_camera_pose, module)?)?;
+    module.add_function(wrap_pyfunction!(triangulate, module)?)?;
     Ok(())
 }

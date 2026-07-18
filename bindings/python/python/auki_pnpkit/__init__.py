@@ -66,6 +66,54 @@ def estimate_square_pose_from_pixels(
     return _native.estimate_square_pose_from_pixels(pixels, physical_size, camera)
 
 
+def solve_pnp_stereo(
+    landmarks: Any,
+    observations: Any,
+    rig: Any,
+    method: str = "iterative",
+) -> dict[str, Any]:
+    """Estimate object pose from stereo landmark observations (OpenGL, left primary).
+
+    ``rig`` is a calibrated stereo pair::
+
+        {
+            "left": {"fx", "fy", "cx", "cy", "dist"?},
+            "right": {...},
+            "right_from_left": {"position": {...}, "rotation": {...}},
+        }
+
+    ``right_from_left`` is the pose of the right camera in the **left** camera
+    frame in **OpenCV** convention. Observations are matched to landmarks by
+    string ``id``; each observation may omit ``left`` or ``right`` (or pass
+    ``None``).
+    """
+    return _native.solve_pnp_stereo(landmarks, observations, rig, method)
+
+
+def solve_pnp_stereo_camera_pose(
+    landmarks: Any,
+    observations: Any,
+    rig: Any,
+    method: str = "iterative",
+) -> dict[str, Any]:
+    """Estimate camera pose from stereo observations (inverse of object pose)."""
+    return _native.solve_pnp_stereo_camera_pose(landmarks, observations, rig, method)
+
+
+def triangulate(
+    left_pixel: Any,
+    right_pixel: Any,
+    rig: Any,
+) -> dict[str, Any]:
+    """Midpoint-triangulate a stereo correspondence into the left OpenCV frame.
+
+    Returns ``{"x", "y", "z"}`` in the **left camera OpenCV** coordinate system
+    (+Z forward). Input pixels may be distorted; they are undistorted via the
+    rig cameras.
+    """
+    return _native.triangulate(left_pixel, right_pixel, rig)
+
+
 __all__ = [
     "__version__",
     "camera_pose_from_solve_pnp_pose",
@@ -73,4 +121,7 @@ __all__ = [
     "estimate_square_pose_from_rays",
     "solve_pnp",
     "solve_pnp_camera_pose",
+    "solve_pnp_stereo",
+    "solve_pnp_stereo_camera_pose",
+    "triangulate",
 ]
