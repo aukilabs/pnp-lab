@@ -22,6 +22,9 @@ Expo module for React Native.
 - **Calibrated stereo** as N=2 helper: `StereoRig`, joint left+right landmark
   PnP (delegates to multiview), midpoint triangulation, and stereo
   square-marker pose
+- **Multi-view monocular calibration**: Zhang-style init + joint BA
+  (`calibrate_camera`, `calibrate_from_square_views`) for intrinsics and
+  optional Brown–Conrady distortion from many views of a known planar target
 - Square-marker pose from **camera rays** or **image pixels** (AR / portal
   calibration workflows)
 - `no_std` + `alloc` core for embedded and mobile targets
@@ -154,6 +157,8 @@ Useful entry points:
 | `estimate_square_pose_from_rays` | Square marker from four 3D rays |
 | `estimate_square_pose_from_pixels` | Square marker from four image corners + `Camera` |
 | `estimate_square_pose_from_stereo_pixels` | Square marker from dual-eye corner pixels |
+| `calibrate_from_square_views` | Monocular intrinsics from multi-view square / QR corners |
+| `calibrate_camera` | Monocular intrinsics from shared 3D object points + multi-view pixels |
 | `Camera::project` / `undistort_pixel` / `unproject_opengl_ray` | Projection helpers |
 | `MultiViewRig` / `MultiViewObservation` / `CameraView` | N-view calibrated rig and sparse per-view pixels |
 | `StereoRig` / `StereoLandmarkObservation` | Calibrated stereo pair and partial observations |
@@ -383,6 +388,88 @@ C and Python expose the same stereo surface (`peyote_pnp_solve_stereo` /
 `peyote_pnp_triangulate`, and `auki_pnpkit.solve_pnp_stereo` /
 `triangulate`). Multi-view is Rust-core today (bindings follow-on). See
 [bindings/python/README.md](bindings/python/README.md).
+
+### Camera calibration (multi-view)
+
+Recover monocular intrinsics and optional Brown–Conrady distortion from
+**many views** of a known planar target—no OpenCV runtime. The pipeline is
+Zhang-style planar initialization (homographies → initial `K`, pose seeds via
+`solve_pnp`) followed by joint Levenberg–Marquardt over free intrinsics,
+distortion, and per-view poses.
+
+**Views need diversity.** Purely frontal, parallel-to-plane captures are
+ill-conditioned; include tilts and varied angles. With only 4 points per view
+(e.g. QR outer corners), phones typically need **~8–15 diverse views** in
+practice. Single-view calibration is not supported (`min_views` default 3).
+
+**`fix_aspect_ratio = true` (default) is recommended for phones** and most
+square-pixel sensors so the solver keeps `fx == fy`. Set it false only when
+you know the pixel aspect is anisotropic.
+
+Prefer [`calibrate_from_square_views`](crates/pnp-core/src/calibrate.rs) for
+QR / planar quads: pass image corners ordered **TL → TR → BR → BL** and the
+marker `physical_size` (meters if your object model is meters). For general
+planar or non-square targets (≥4 shared 3D points, same order every view),
+use `calibrate_camera`.
+
+Square object model (centered, Z = 0, half-side `h = physical_size / 2`):
+
+| Corner | Object point |
+|--------|----------------|
+| TL | `(-h, +h, 0)` |
+| TR | `(+h, +h, 0)` |
+| BR | `(+h, -h, 0)` |
+| BL | `(-h, -h, 0)` |
+
+```rust
+use pnp_core::{
+    calibrate_from_square_views, CalibrateOptions, Vector2,
+};
+
+fn calibrate_qr_corners(
+    // One [TL, TR, BR, BL] per view — e.g. from a QR detector.
+    corners_per_view: &[[Vector2; 4]],
+) -> Result<pnp_core::CalibrationResult, pnp_core::PnpError> {
+    // Prefer many tilted views; 4 pts/view needs angle diversity.
+    // Phones: keep fix_aspect_ratio (default true). dist_len: 0|2|4|5|8.
+    let options = CalibrateOptions {
+        fix_aspect_ratio: true,
+        dist_len: 5,
+        ..CalibrateOptions::default()
+    };
+
+    let result = calibrate_from_square_views(
+        corners_per_view,
+        /* physical_size */ 0.05, // marker side length (meters if object is meters)
+        /* image_width */ 1920,
+        /* image_height */ 1080,
+        &options,
+    )?;
+
+    // result.camera: fx, fy, cx, cy, dist (OpenCV order)
+    // result.rms_reprojection_error / per_view_rms
+    // result.object_poses: OpenGL object poses (same as solve_pnp)
+    Ok(result)
+}
+```
+
+Pipeline notes:
+
+| Topic | Behavior |
+|-------|----------|
+| Init | Planar homographies → Zhang `K` (≥3 views); pose seeds via monocular PnP |
+| Refine | Joint LM over free intrinsics, distortion, and per-view rvec/tvec |
+| Distortion | OpenCV Brown–Conrady; `dist_len` ∈ `{0, 2, 4, 5, 8}` (2 packs as `[k1,k2,0,0,0]`) |
+| Public poses | **OpenGL** object poses per used view (same as `solve_pnp`) |
+| Image size | Required (`image_width` / `image_height`) for principal-point init |
+| Defaults | `min_views=3`, `fix_aspect_ratio=true`, `dist_len=5` |
+
+**Bindings:** Python (`auki_pnpkit.calibrate_from_square_views` /
+`calibrate_camera`) and C FFI (`peyote_pnp_calibrate_from_square_views`,
+`pnp_calibrate_options_t`) are available. **WASM and Expo calibration
+bindings are deferred** for a follow-on. See
+[bindings/python/README.md](bindings/python/README.md) and
+`crates/pnp-ffi/include/pnp.h`.
 
 ### Python
 

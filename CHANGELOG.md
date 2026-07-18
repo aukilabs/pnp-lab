@@ -42,3 +42,17 @@
   - Python: `solve_pnp_stereo`, `solve_pnp_stereo_camera_pose`, `triangulate`.
   - Out of scope for this release: stereo rectification, disparity matching,
     WIT stereo exports, Expo dual-camera product wiring.
+- **Multi-view monocular camera calibration:**
+  - Core: `CalibrateOptions` / `CalibrationView` / `CalibrationResult`,
+    `calibrate_camera` (shared object points + multi-view pixels),
+    `calibrate_from_square_views` (QR / planar quad convenience; corners
+    **TL→TR→BR→BL** + `physical_size`), Zhang planar init + joint LM
+    over free intrinsics, Brown–Conrady distortion (`dist_len` 0/2/4/5/8),
+    and per-view poses. Defaults: `min_views=3`, `fix_aspect_ratio=true`
+    (recommended for phones), `dist_len=5`. Public `object_poses` are
+    **OpenGL** (same as `solve_pnp`). Requires diverse views (tilts); pure
+    frontal parallel planes are ill-conditioned. Single-view is not supported.
+  - Python: `calibrate_from_square_views`, `calibrate_camera`.
+  - C FFI: `pnp_calibrate_options_t`, `peyote_pnp_calibrate_from_square_views`.
+  - Out of scope for this release: WASM WIT calibration, Expo/TS calibration
+    wrappers, single-view calibration, multi-camera extrinsics, OpenCV runtime.
