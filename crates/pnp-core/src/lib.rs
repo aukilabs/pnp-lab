@@ -62,9 +62,11 @@ pub mod rodrigues;
 pub mod solve;
 pub mod sqpnp;
 pub mod square_pose;
+pub mod stereo;
 pub mod types;
 
 pub use camera::Camera;
 pub use solve::{camera_pose_from_solve_pnp_pose, solve_pnp, solve_pnp_camera_pose};
 pub use square_pose::{estimate_square_pose_from_pixels, estimate_square_pose_from_rays};
+pub use stereo::{StereoLandmarkObservation, StereoRig};
 pub use types::*;
