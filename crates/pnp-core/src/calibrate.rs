@@ -1,9 +1,9 @@
 //! Multi-view monocular camera calibration: public types, validation, square
-//! planar object points, and planar homography DLT.
+//! planar object points, planar homography DLT, and Zhang initial intrinsics.
 //!
-//! Zhang-style initialization and joint bundle adjustment land in later tasks.
-//! This module exposes configuration / result types, input checks, and a
-//! private plane-to-image homography estimator used by the calibration init.
+//! Joint bundle adjustment lands in later tasks. This module exposes
+//! configuration / result types, input checks, and private init helpers
+//! (homography DLT + Zhang closed-form `K`).
 
 use crate::camera::Camera;
 use crate::types::{PnpError, Pose, Vector2, Vector3};
@@ -392,6 +392,189 @@ fn normalize_points_2d(pts: &[(f64, f64)]) -> Result<(Matrix3<f64>, Vec<(f64, f6
     Ok((t, out))
 }
 
+// ---------------------------------------------------------------------------
+// Zhang initial intrinsics (zero skew)
+// ---------------------------------------------------------------------------
+
+/// Minimum number of plane-to-image homographies for Zhang's closed form.
+const ZHANG_MIN_HOMOGRAPHIES: usize = 3;
+/// Floor for |B11|, |B22|, lambda, and recovered focals.
+const ZHANG_B_EPS: f64 = 1e-12;
+
+/// Fallback pinhole guess used when Zhang's system is ill-conditioned.
+///
+/// ```text
+/// fx = fy = max(image_width, image_height)
+/// cx = image_width / 2
+/// cy = image_height / 2
+/// ```
+///
+/// The public calibrate entry point may also use this when the homography
+/// stage fails to produce ≥3 valid views.
+fn zhang_fallback_intrinsics(image_width: u32, image_height: u32) -> (f64, f64, f64, f64) {
+    let w = image_width as f64;
+    let h = image_height as f64;
+    let f = w.max(h);
+    (f, f, w * 0.5, h * 0.5)
+}
+
+/// Zhang closed-form initial intrinsics from ≥3 plane-to-image homographies.
+///
+/// Recovers `(fx, fy, cx, cy)` with **zero skew** from the image of the absolute
+/// conic constraints on each `Hᵢ = K [r1 r2 t]` (object plane Z = 0):
+///
+/// ```text
+/// h1ᵀ ω h2 = 0
+/// h1ᵀ ω h1 = h2ᵀ ω h2
+/// ```
+///
+/// where `ω = (K Kᵀ)⁻¹` and `B12 = 0` (skew freezes the off-diagonal of the
+/// upper 2×2 of the symmetric matrix `B ~ ω`).
+///
+/// # Ill-conditioned fallback
+///
+/// If the stacked constraint system or the closed-form recovery of `K` from
+/// `B` is numerically invalid (non-finite `H`, rank-deficient `VᵀV`, negative
+/// scale/focal squares, non-finite results), returns the documented fallback:
+///
+/// ```text
+/// fx = fy = max(w, h);  cx = w/2;  cy = h/2
+/// ```
+/// as `Ok(...)` so the joint BA can still start from a coarse pinhole seed.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |-----------|--------|
+/// | fewer than 3 homographies | [`PnpError::InsufficientPoints`] |
+// Used by the public calibrate pipeline (later tasks); unit-tested now.
+#[allow(dead_code)]
+fn zhang_initial_intrinsics(
+    homographies: &[Matrix3<f64>],
+    image_width: u32,
+    image_height: u32,
+) -> Result<(f64, f64, f64, f64), PnpError> {
+    if homographies.len() < ZHANG_MIN_HOMOGRAPHIES {
+        return Err(PnpError::InsufficientPoints);
+    }
+
+    for h in homographies {
+        if !h.iter().all(|e| e.is_finite()) {
+            return Ok(zhang_fallback_intrinsics(image_width, image_height));
+        }
+    }
+
+    // Zero-skew B = [[B11, 0, B13], [0, B22, B23], [B13, B23, B33]].
+    // Each H contributes two rows of V b = 0 with b = [B11, B22, B13, B23, B33].
+    let n = homographies.len();
+    let mut v = DMatrix::<f64>::zeros(2 * n, 5);
+    for (k, h) in homographies.iter().enumerate() {
+        let v12 = v_ij_zeroskew(h, 0, 1);
+        let v11 = v_ij_zeroskew(h, 0, 0);
+        let v22 = v_ij_zeroskew(h, 1, 1);
+        let r0 = 2 * k;
+        let r1 = r0 + 1;
+        for c in 0..5 {
+            v[(r0, c)] = v12[c];
+            v[(r1, c)] = v11[c] - v22[c];
+        }
+    }
+
+    let vtv = v.transpose() * &v;
+    let eigen = vtv.symmetric_eigen();
+    let eigenvalues = &eigen.eigenvalues;
+    let mut min_idx = 0usize;
+    let mut min_val = eigenvalues[0];
+    let mut max_abs = eigenvalues[0].abs();
+    for i in 1..5 {
+        if eigenvalues[i] < min_val {
+            min_val = eigenvalues[i];
+            min_idx = i;
+        }
+        max_abs = max_abs.max(eigenvalues[i].abs());
+    }
+    if max_abs < ZHANG_B_EPS {
+        return Ok(zhang_fallback_intrinsics(image_width, image_height));
+    }
+
+    let b = eigen.eigenvectors.column(min_idx);
+    if !b.iter().all(|e| e.is_finite()) {
+        return Ok(zhang_fallback_intrinsics(image_width, image_height));
+    }
+
+    match recover_k_from_b_zeroskew(b[0], b[1], b[2], b[3], b[4]) {
+        Some(k) => Ok(k),
+        None => Ok(zhang_fallback_intrinsics(image_width, image_height)),
+    }
+}
+
+/// Coefficient row for `h_iᵀ B h_j` with zero-skew `B` (no B12 term).
+///
+/// Columns of `H` are Zhang's `h0, h1, h2`. Returns
+/// `[B11, B22, B13, B23, B33]` coefficients.
+fn v_ij_zeroskew(h: &Matrix3<f64>, i: usize, j: usize) -> [f64; 5] {
+    let hi0 = h[(0, i)];
+    let hi1 = h[(1, i)];
+    let hi2 = h[(2, i)];
+    let hj0 = h[(0, j)];
+    let hj1 = h[(1, j)];
+    let hj2 = h[(2, j)];
+    [
+        hi0 * hj0,             // B11
+        hi1 * hj1,             // B22
+        hi2 * hj0 + hi0 * hj2, // B13
+        hi2 * hj1 + hi1 * hj2, // B23
+        hi2 * hj2,             // B33
+    ]
+}
+
+/// Closed-form `(fx, fy, cx, cy)` from zero-skew absolute-conic coefficients.
+///
+/// Tries both signs of `b` (null-space orientation is arbitrary).
+fn recover_k_from_b_zeroskew(
+    b11: f64,
+    b22: f64,
+    b13: f64,
+    b23: f64,
+    b33: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    for sign in [1.0_f64, -1.0_f64] {
+        let b11 = sign * b11;
+        let b22 = sign * b22;
+        let b13 = sign * b13;
+        let b23 = sign * b23;
+        let b33 = sign * b33;
+
+        if b11.abs() < ZHANG_B_EPS || b22.abs() < ZHANG_B_EPS {
+            continue;
+        }
+
+        // OpenCV/Zhang recovery with B12 = 0:
+        //   cy = -B23/B22
+        //   λ  = B33 - B13²/B11 - B23²/B22
+        //   fx = √(λ/B11), fy = √(λ/B22)
+        //   cx = -B13/B11
+        let cy = -b23 / b22;
+        let lambda = b33 - (b13 * b13) / b11 - (b23 * b23) / b22;
+        if lambda / b11 <= ZHANG_B_EPS || lambda / b22 <= ZHANG_B_EPS {
+            continue;
+        }
+
+        let fx = libm::sqrt(lambda / b11);
+        let fy = libm::sqrt(lambda / b22);
+        let cx = -b13 / b11;
+
+        if !(fx.is_finite() && fy.is_finite() && cx.is_finite() && cy.is_finite()) {
+            continue;
+        }
+        if fx < ZHANG_B_EPS || fy < ZHANG_B_EPS {
+            continue;
+        }
+        return Some((fx, fy, cx, cy));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,5 +844,126 @@ mod tests {
             estimate_homography_dlt(&bad, &img4_ok),
             Err(PnpError::SolverFailed)
         );
+    }
+
+    /// Build OpenCV R = Ry(yaw) * Rx(pitch) * Rz(roll).
+    fn rot_ypr(yaw: f64, pitch: f64, roll: f64) -> Matrix3<f64> {
+        let (cy, sy) = (libm::cos(yaw), libm::sin(yaw));
+        let (cp, sp) = (libm::cos(pitch), libm::sin(pitch));
+        let (cr, sr) = (libm::cos(roll), libm::sin(roll));
+        let ry = Matrix3::new(cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy);
+        let rx = Matrix3::new(1.0, 0.0, 0.0, 0.0, cp, -sp, 0.0, sp, cp);
+        let rz = Matrix3::new(cr, -sr, 0.0, sr, cr, 0.0, 0.0, 0.0, 1.0);
+        ry * rx * rz
+    }
+
+    /// Plane-to-image H = K [r1 r2 t] (object Z = 0), scaled so H[2,2] = 1.
+    fn homography_from_pose(
+        k: &Matrix3<f64>,
+        r: &Matrix3<f64>,
+        t: &nalgebra::Vector3<f64>,
+    ) -> Matrix3<f64> {
+        let mut h = Matrix3::zeros();
+        h.set_column(0, &r.column(0));
+        h.set_column(1, &r.column(1));
+        h.set_column(2, t);
+        h = k * h;
+        let h22 = h[(2, 2)];
+        if h22.abs() > 1e-12 {
+            h /= h22;
+        }
+        h
+    }
+
+    #[test]
+    fn zhang_recovers_intrinsics_five_poses() {
+        // True pinhole (zero skew, mild aspect). Non-centered principal point.
+        let fx_t = 920.0;
+        let fy_t = 905.0;
+        let cx_t = 640.0;
+        let cy_t = 360.0;
+        let w = 1280u32;
+        let h = 720u32;
+        let k = Matrix3::new(fx_t, 0.0, cx_t, 0.0, fy_t, cy_t, 0.0, 0.0, 1.0);
+
+        // Planar square + interior samples (Z=0), side 0.2 m.
+        let half = 0.1;
+        let object_xy: [(f64, f64); 9] = [
+            (-half, half),
+            (0.0, half),
+            (half, half),
+            (-half, 0.0),
+            (0.0, 0.0),
+            (half, 0.0),
+            (-half, -half),
+            (0.0, -half),
+            (half, -half),
+        ];
+
+        // ≥5 diverse non-frontal poses (Zhang needs tilt / yaw diversity).
+        let poses: [(f64, f64, f64, f64, f64, f64); 6] = [
+            (0.25, -0.18, 0.05, 0.01, -0.02, 0.55),
+            (-0.30, 0.22, -0.08, -0.03, 0.01, 0.62),
+            (0.15, 0.28, 0.12, 0.02, 0.03, 0.48),
+            (-0.20, -0.25, 0.0, -0.01, -0.02, 0.70),
+            (0.35, 0.10, -0.15, 0.0, 0.02, 0.58),
+            (-0.12, 0.32, 0.18, 0.03, -0.01, 0.52),
+        ];
+
+        let mut homographies = Vec::with_capacity(poses.len());
+        for &(yaw, pitch, roll, tx, ty, tz) in &poses {
+            let r = rot_ypr(yaw, pitch, roll);
+            let t = nalgebra::Vector3::new(tx, ty, tz);
+            let h_true = homography_from_pose(&k, &r, &t);
+
+            // Project via true H, recover H with DLT (pipeline path).
+            let image_uv: Vec<Vector2> = object_xy
+                .iter()
+                .map(|&(x, y)| apply_h(&h_true, x, y))
+                .collect();
+            let h_est = estimate_homography_dlt(&object_xy, &image_uv).unwrap();
+            assert!(
+                homographies_close(&h_est, &h_true, 1e-6),
+                "DLT H should match synthetic projection H"
+            );
+            homographies.push(h_est);
+        }
+
+        let (fx, fy, cx, cy) =
+            zhang_initial_intrinsics(&homographies, w, h).expect("Zhang should succeed");
+
+        // ~1% on focals, few pixels on principal point (noise-free synthetic).
+        assert!((fx - fx_t).abs() / fx_t < 0.01, "fx={fx} true={fx_t}");
+        assert!((fy - fy_t).abs() / fy_t < 0.01, "fy={fy} true={fy_t}");
+        assert!((cx - cx_t).abs() < 3.0, "cx={cx} true={cx_t}");
+        assert!((cy - cy_t).abs() < 3.0, "cy={cy} true={cy_t}");
+    }
+
+    #[test]
+    fn zhang_rejects_too_few_and_falls_back_on_bad_h() {
+        let w = 640u32;
+        let h = 480u32;
+        let (ffx, ffy, fcx, fcy) = zhang_fallback_intrinsics(w, h);
+        assert!((ffx - 640.0).abs() < 1e-12);
+        assert!((ffy - 640.0).abs() < 1e-12);
+        assert!((fcx - 320.0).abs() < 1e-12);
+        assert!((fcy - 240.0).abs() < 1e-12);
+
+        // Fewer than 3 homographies → InsufficientPoints (not silent fallback).
+        let two = [Matrix3::identity(), Matrix3::identity()];
+        assert_eq!(
+            zhang_initial_intrinsics(&two, w, h),
+            Err(PnpError::InsufficientPoints)
+        );
+
+        // Non-finite H → documented fallback Ok(...).
+        let mut bad = Matrix3::identity();
+        bad[(0, 0)] = f64::NAN;
+        let three_bad = [bad, Matrix3::identity(), Matrix3::identity()];
+        let (fx, fy, cx, cy) = zhang_initial_intrinsics(&three_bad, w, h).unwrap();
+        assert!((fx - ffx).abs() < 1e-12);
+        assert!((fy - ffy).abs() < 1e-12);
+        assert!((cx - fcx).abs() < 1e-12);
+        assert!((cy - fcy).abs() < 1e-12);
     }
 }
