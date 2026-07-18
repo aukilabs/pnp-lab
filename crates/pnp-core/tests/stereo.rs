@@ -4,8 +4,8 @@ use pnp_core::pose_tools::{self, transform_point};
 use pnp_core::rodrigues::rvec_to_rotation_matrix;
 use pnp_core::types::rotation_matrix_to_quaternion;
 use pnp_core::{
-    solve_pnp_stereo, Camera, Landmark, PnpError, Pose, Quaternion, SolvePnpMethod,
-    StereoLandmarkObservation, StereoRig, Vector2, Vector3,
+    estimate_square_pose_from_stereo_pixels, solve_pnp_stereo, Camera, Landmark, PnpError, Pose,
+    Quaternion, SolvePnpMethod, StereoLandmarkObservation, StereoRig, Vector2, Vector3,
 };
 
 fn square_landmarks() -> Vec<Landmark> {
@@ -195,4 +195,178 @@ fn partial_right_views_still_recover() {
     let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
     assert!(pos_err < 1e-3, "partial stereo pos err {}", pos_err);
     assert!(rot_err < 1e-3, "partial stereo rot err {}", rot_err);
+}
+
+/// Corner order for square pose: TL, TR, BR, BL in left OpenCV frame.
+///
+/// `right` / `up` are the marker's local +X / +Y axes expressed in left OpenCV
+/// coordinates (for a frontal marker facing the camera, up ≈ (0, −1, 0)).
+fn stereo_square_corners_cv(center: Vector3, right: Vector3, up: Vector3, half: f64) -> [Vector3; 4] {
+    let scale_add = |a: Vector3, s: f64, b: Vector3| {
+        Vector3::new(a.x + s * b.x, a.y + s * b.y, a.z + s * b.z)
+    };
+    let corner = |sr: f64, su: f64| {
+        let mut p = center;
+        p = scale_add(p, sr * half, right);
+        p = scale_add(p, su * half, up);
+        p
+    };
+    [
+        corner(-1.0, 1.0),  // TL = −right + up
+        corner(1.0, 1.0),   // TR
+        corner(1.0, -1.0),  // BR
+        corner(-1.0, -1.0), // BL
+    ]
+}
+
+fn project_corners_stereo(corners_left: &[Vector3; 4], rig: &StereoRig) -> ([Vector2; 4], [Vector2; 4]) {
+    // Triangulation treats `right_from_left` as the right camera's pose in the left
+    // frame: X_left = R * X_right + t, so X_right = Rᵀ (X_left − t).
+    // (Stereo PnP residuals use the inverse convention for the same field; fixtures
+    // for triangulation / square stereo must match triangulate_midpoint.)
+    let left_from_right_inv = pose_tools::invert_pose(&rig.right_from_left);
+    let mut left = [Vector2::new(0.0, 0.0); 4];
+    let mut right = [Vector2::new(0.0, 0.0); 4];
+    for i in 0..4 {
+        left[i] = project_pinhole(&rig.left, corners_left[i]);
+        let x_right = transform_point(&left_from_right_inv, corners_left[i]);
+        right[i] = project_pinhole(&rig.right, x_right);
+    }
+    (left, right)
+}
+
+fn rotate_vector(q: &Quaternion, v: Vector3) -> Vector3 {
+    let vector_quat = Quaternion::new(v.x, v.y, v.z, 0.0);
+    let rotated = q.multiply(&vector_quat).multiply(&q.conjugate());
+    Vector3::new(rotated.x, rotated.y, rotated.z)
+}
+
+fn normalize_v(v: Vector3) -> Vector3 {
+    let len = v.length();
+    Vector3::new(v.x / len, v.y / len, v.z / len)
+}
+
+#[test]
+fn stereo_square_pose_recovers_frontal_marker() {
+    let physical_size = 0.2;
+    let half = physical_size * 0.5;
+    let rig = make_rig();
+
+    // Frontal square in left OpenCV frame: Z=1.5 m, centered near principal ray.
+    let center_cv = Vector3::new(0.02, -0.01, 1.5);
+    let right_cv = Vector3::new(1.0, 0.0, 0.0);
+    // "Up" on the marker face in image sense is -Y in OpenCV when facing camera.
+    let up_cv = Vector3::new(0.0, -1.0, 0.0);
+    let corners = stereo_square_corners_cv(center_cv, right_cv, up_cv, half);
+    let (left_px, right_px) = project_corners_stereo(&corners, &rig);
+
+    let estimate =
+        estimate_square_pose_from_stereo_pixels(left_px, right_px, physical_size, &rig).unwrap();
+
+    let gl_true_pos = Vector3::new(center_cv.x, -center_cv.y, -center_cv.z);
+    let pos_err = Vector3::new(
+        estimate.pose.position.x - gl_true_pos.x,
+        estimate.pose.position.y - gl_true_pos.y,
+        estimate.pose.position.z - gl_true_pos.z,
+    )
+    .length();
+    assert!(
+        pos_err < 1e-4,
+        "position error {} (est {:?} expected {:?})",
+        pos_err,
+        estimate.pose.position,
+        gl_true_pos
+    );
+    assert!(
+        estimate.confidence > 0.95,
+        "confidence was {}",
+        estimate.confidence
+    );
+    assert!(
+        estimate.normalized_corner_error < 1e-6,
+        "normalized corner error was {}",
+        estimate.normalized_corner_error
+    );
+
+    // Local +X should map to OpenGL right ≈ (+1, 0, 0); +Y to OpenGL up ≈ (0, +1, 0).
+    let est_right = normalize_v(rotate_vector(
+        &estimate.pose.rotation,
+        Vector3::new(1.0, 0.0, 0.0),
+    ));
+    let est_up = normalize_v(rotate_vector(
+        &estimate.pose.rotation,
+        Vector3::new(0.0, 1.0, 0.0),
+    ));
+    assert!(
+        est_right.x > 0.99 && est_right.y.abs() < 1e-3 && est_right.z.abs() < 1e-3,
+        "estimated right {:?}",
+        est_right
+    );
+    assert!(
+        est_up.y > 0.99 && est_up.x.abs() < 1e-3 && est_up.z.abs() < 1e-3,
+        "estimated up {:?}",
+        est_up
+    );
+
+    for i in 0..4 {
+        let expected_d = corners[i].length();
+        assert!(
+            (estimate.ray_distances[i] - expected_d).abs() < 1e-4,
+            "ray_distance[{}] = {} expected {}",
+            i,
+            estimate.ray_distances[i],
+            expected_d
+        );
+    }
+}
+
+#[test]
+fn stereo_square_pose_recovers_tilted_marker() {
+    let physical_size = 0.16;
+    let half = physical_size * 0.5;
+    let rig = make_rig();
+
+    // Mild yaw so the square stays in front of both cameras with clear disparity.
+    let yaw = 0.18_f64;
+    let right = normalize_v(Vector3::new(yaw.cos(), 0.0, -yaw.sin()));
+    // Marker +Y (up) ≈ image top = −Y OpenCV, slightly tilted.
+    let up = normalize_v(Vector3::new(0.05, -1.0, 0.08));
+    // Re-orthogonalize up against right.
+    let dot_ru = right.x * up.x + right.y * up.y + right.z * up.z;
+    let up = normalize_v(Vector3::new(
+        up.x - dot_ru * right.x,
+        up.y - dot_ru * right.y,
+        up.z - dot_ru * right.z,
+    ));
+    let center_cv = Vector3::new(0.03, 0.02, 1.7);
+    let corners = stereo_square_corners_cv(center_cv, right, up, half);
+    let (left_px, right_px) = project_corners_stereo(&corners, &rig);
+
+    let estimate =
+        estimate_square_pose_from_stereo_pixels(left_px, right_px, physical_size, &rig).unwrap();
+
+    let gl_true_pos = Vector3::new(center_cv.x, -center_cv.y, -center_cv.z);
+    let pos_err = Vector3::new(
+        estimate.pose.position.x - gl_true_pos.x,
+        estimate.pose.position.y - gl_true_pos.y,
+        estimate.pose.position.z - gl_true_pos.z,
+    )
+    .length();
+    assert!(pos_err < 1e-3, "tilted pos err {}", pos_err);
+    assert!(estimate.confidence > 0.9, "confidence {}", estimate.confidence);
+    assert!(
+        estimate.normalized_corner_error < 1e-4,
+        "corner error {}",
+        estimate.normalized_corner_error
+    );
+}
+
+#[test]
+fn stereo_square_pose_rejects_bad_size() {
+    let rig = make_rig();
+    let px = [Vector2::new(100.0, 100.0); 4];
+    assert_eq!(
+        estimate_square_pose_from_stereo_pixels(px, px, 0.0, &rig),
+        Err(PnpError::SolverFailed)
+    );
 }

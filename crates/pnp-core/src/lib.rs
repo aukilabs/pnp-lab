@@ -8,7 +8,8 @@
 //! - Classic PnP from 3D landmarks and 2D image observations
 //!   ([`solve_pnp`], [`solve_pnp_camera_pose`])
 //! - Square-marker pose from four corner rays or image pixels
-//!   ([`estimate_square_pose_from_rays`], [`estimate_square_pose_from_pixels`])
+//!   ([`estimate_square_pose_from_rays`], [`estimate_square_pose_from_pixels`],
+//!   [`estimate_square_pose_from_stereo_pixels`])
 //! - Calibrated monocular [`Camera`] with optional Brown–Conrady distortion
 //!
 //! ## Coordinate conventions
@@ -71,7 +72,10 @@ pub mod types;
 pub use absolute_orientation::absolute_orientation;
 pub use camera::Camera;
 pub use solve::{camera_pose_from_solve_pnp_pose, solve_pnp, solve_pnp_camera_pose};
-pub use square_pose::{estimate_square_pose_from_pixels, estimate_square_pose_from_rays};
+pub use square_pose::{
+    estimate_square_pose_from_pixels, estimate_square_pose_from_rays,
+    estimate_square_pose_from_stereo_pixels,
+};
 pub use stereo::{StereoLandmarkObservation, StereoRig};
 pub use stereo_solve::{solve_pnp_stereo, solve_pnp_stereo_camera_pose};
 pub use triangulate::triangulate_midpoint;

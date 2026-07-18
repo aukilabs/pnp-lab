@@ -4,11 +4,15 @@
 //! from either:
 //!
 //! - four world-space (or tracking-space) rays through the corners, or
-//! - four image pixels plus a [`Camera`] (undistort + OpenGL unprojection).
+//! - four image pixels plus a [`Camera`] (undistort + OpenGL unprojection), or
+//! - dual-view stereo corner pixels via triangulation + square geometry fit.
 //!
 //! Corner order is always **top-left, top-right, bottom-right, bottom-left**.
 
 use crate::camera::Camera;
+use crate::pose_tools;
+use crate::stereo::StereoRig;
+use crate::triangulate::triangulate_midpoint;
 use crate::types::{
     rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Ray3, SquarePoseEstimate, Vector2,
     Vector3,
@@ -95,6 +99,79 @@ pub fn estimate_square_pose_from_rays(
         confidence: clamp01(confidence),
         normalized_corner_error,
         ray_distances: distances,
+    })
+}
+
+/// Estimate square pose from **stereo corner pixels** (both eyes).
+///
+/// # Strategy (v1)
+///
+/// 1. Triangulate each of the four TL→TR→BR→BL correspondences with
+///    [`triangulate_midpoint`] → 3D corners in the **left OpenCV** frame.
+/// 2. Fit square pose from those points via the same axis construction as the
+///    monocular ray path (`pose_from_points`).
+/// 3. Score residual square constraints (edge/diagonal/orthogonality) for
+///    confidence; convert the rigid pose to **OpenGL** (left camera) for the
+///    public result, matching mono / stereo PnP conventions.
+///
+/// # Arguments
+///
+/// - `left_corners` / `right_corners`: TL, TR, BR, BL in each eye (OpenCV pixels)
+/// - `physical_size`: square side length (same units as triangulation / baseline)
+/// - `rig`: calibrated stereo pair (`right_from_left` in left OpenCV frame)
+///
+/// # Returns
+///
+/// [`SquarePoseEstimate`] with:
+/// - `pose` in the **left OpenGL** camera frame
+/// - `ray_distances` = distance from the left camera origin to each triangulated
+///   corner (not monocular LM distances)
+///
+/// # Errors
+///
+/// [`PnpError::SolverFailed`] for non-positive size, failed triangulation,
+/// degenerate geometry, or residual above the success threshold.
+pub fn estimate_square_pose_from_stereo_pixels(
+    left_corners: [Vector2; 4],
+    right_corners: [Vector2; 4],
+    physical_size: f64,
+    rig: &StereoRig,
+) -> Result<SquarePoseEstimate, PnpError> {
+    if !physical_size.is_finite() || physical_size <= 0.0 {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let mut points = [Vector3::new(0.0, 0.0, 0.0); 4];
+    let mut ray_distances = [0.0; 4];
+    for i in 0..DISTANCE_COUNT {
+        let p = triangulate_midpoint(rig, left_corners[i], right_corners[i])?;
+        let d = length(p);
+        if !d.is_finite() || d <= 0.0 {
+            return Err(PnpError::SolverFailed);
+        }
+        points[i] = p;
+        ray_distances[i] = d;
+    }
+
+    let residuals = square_residuals_from_points(&points, physical_size)?;
+    let normalized_corner_error = rms(&residuals);
+    if !normalized_corner_error.is_finite() || normalized_corner_error > SUCCESS_RESIDUAL_RMS {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let pose_cv = pose_from_points(&points)?;
+    let pose = pose_tools::from_opencv_to_opengl(&pose_cv);
+
+    let confidence = 1.0 / (1.0 + normalized_corner_error);
+    if !confidence.is_finite() {
+        return Err(PnpError::SolverFailed);
+    }
+
+    Ok(SquarePoseEstimate {
+        pose,
+        confidence: clamp01(confidence),
+        normalized_corner_error,
+        ray_distances,
     })
 }
 
@@ -295,6 +372,14 @@ fn residuals_for(
     physical_size: f64,
 ) -> Result<[f64; RESIDUAL_COUNT], PnpError> {
     let points = points_from_distances(rays, distances)?;
+    square_residuals_from_points(&points, physical_size)
+}
+
+/// Normalized square-geometry residuals for four ordered corners (TL,TR,BR,BL).
+fn square_residuals_from_points(
+    points: &[Vector3; 4],
+    physical_size: f64,
+) -> Result<[f64; RESIDUAL_COUNT], PnpError> {
     let diagonal = physical_size * libm::sqrt(2.0);
     let size2 = physical_size * physical_size;
     let size3 = size2 * physical_size;
