@@ -154,10 +154,12 @@ Useful entry points:
 
 ### Stereo
 
-Calibrated stereo uses a **left-primary** rig: the left camera is the seed and
-the frame of the returned object pose. Extrinsics `right_from_left` are the
-pose of the **right** camera expressed in the **left** camera frame, stored and
-interpreted in **OpenCV** convention (`+Z` forward):
+Calibrated stereo uses a **left-primary** rig: the left camera is the frame of
+the returned object pose (and the preferred monocular seed). If left is sparse,
+the seed may use the right view and transport into left. Extrinsics
+`right_from_left` are the pose of the **right** camera expressed in the
+**left** camera frame, stored and interpreted in **OpenCV** convention
+(`+Z` forward):
 
 ```text
 X_right = R_rl * X_left + t_rl
@@ -248,7 +250,7 @@ Pipeline notes:
 
 | Topic | Behavior |
 |-------|----------|
-| Seed | Monocular PnP on **left** observations only (enough left points required) |
+| Seed | Monocular PnP preferring **left**; if left is sparse, seed from right when it has enough points and transport into left |
 | Refine | Joint LM over left + right reprojection residuals (OpenCV internals) |
 | Partial observations | Missing left or right pixels are skipped in the residual |
 | Public pose | **OpenGL** object pose, left primary (same meaning as `solve_pnp`) |
@@ -345,7 +347,7 @@ See [bindings/README.md](bindings/README.md) and
 |-------|------------|
 | Image pixels | OpenCV-style: origin top-left, +X right, +Y down |
 | `solve_pnp` / `solve_pnp_stereo` result | **OpenGL** object pose (Y-up, Z-backward) |
-| Stereo primary frame | **Left** camera (seed, returned pose, triangulation origin) |
+| Stereo primary frame | **Left** camera (returned pose, triangulation origin; preferred seed) |
 | `StereoRig.right_from_left` | Pose of right in left frame, **OpenCV** convention |
 | Algebraic solvers (internal) | OpenCV camera frame (+Z forward) then converted |
 | Distortion | OpenCV Brown–Conrady / rational: `k1,k2,p1,p2[,k3[,k4,k5,k6]]` |

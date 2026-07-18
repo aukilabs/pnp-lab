@@ -344,3 +344,64 @@ fn multiview_partial_observations() {
     assert!(rot_err < 1e-3, "partial obs rot err {}", rot_err);
 }
 
+/// When primary has no pixels, seed from the richest non-primary view and recover.
+#[test]
+fn multiview_seeds_from_richest_view_when_primary_empty() {
+    let landmarks = square_landmarks();
+    let rig = make_n3_rig();
+    let cv_true = cv_pose_from_rvec_tvec([0.05, -0.15, 0.08], [0.02, -0.01, 1.5]);
+    let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
+    let mut obs = project_multiview(&landmarks, &rig, &cv_true);
+    // Primary empty; view 1 keeps all points; drop view 2 so view 1 is richest.
+    for o in &mut obs {
+        o.pixels[0] = None;
+        o.pixels[2] = None;
+    }
+
+    for method in [
+        SolvePnpMethod::Iterative,
+        SolvePnpMethod::EPnP,
+        SolvePnpMethod::SQPnP,
+    ] {
+        let pose = solve_pnp_multiview(&landmarks, &obs, &rig, method)
+            .expect("seed from view 1 when primary empty");
+        let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
+        assert!(
+            pos_err < 1e-3,
+            "{:?}: primary-empty pos err {}",
+            method,
+            pos_err
+        );
+        assert!(
+            rot_err < 1e-3,
+            "{:?}: primary-empty rot err {} rad",
+            method,
+            rot_err
+        );
+    }
+}
+
+/// Stereo right-only (left empty) seeds from right when it has enough points.
+#[test]
+fn stereo_right_only_seeds_and_recovers() {
+    let landmarks = square_landmarks();
+    let stereo = make_stereo_rig();
+    let cv_true = cv_pose_from_rvec_tvec([0.05, -0.15, 0.08], [0.02, -0.01, 1.5]);
+    let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
+    let mut stereo_obs = project_stereo(&landmarks, &stereo, &cv_true);
+    for o in &mut stereo_obs {
+        o.left = None;
+    }
+
+    let pose = solve_pnp_stereo(
+        &landmarks,
+        &stereo_obs,
+        &stereo,
+        SolvePnpMethod::Iterative,
+    )
+    .expect("right-only stereo should seed from right");
+    let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
+    assert!(pos_err < 1e-3, "right-only stereo pos err {}", pos_err);
+    assert!(rot_err < 1e-3, "right-only stereo rot err {} rad", rot_err);
+}
+

@@ -2,7 +2,10 @@
 //!
 //! # Pipeline
 //! 1. Match landmarks to [`MultiViewObservation`]s by `id`.
-//! 2. Seed object pose with monocular [`solve_pnp`] on the **primary** view.
+//! 2. Seed object pose with monocular [`solve_pnp`]: prefer the **primary**
+//!    view; if it lacks enough points for `method`, seed from the view with
+//!    the most observations (still ≥ method minimum) and transport the pose
+//!    into the primary frame.
 //! 3. Refine with joint LM over all-view reprojection residuals (OpenCV frame).
 //! 4. Return the refined object pose in **OpenGL** (same convention as mono).
 //!
@@ -15,7 +18,7 @@
 
 use crate::camera::Camera;
 use crate::multiview::{MultiViewObservation, MultiViewRig};
-use crate::pose_tools::{self, transform_point};
+use crate::pose_tools::{self, compose_poses, invert_pose, transform_point};
 use crate::rodrigues;
 use crate::solve::{camera_pose_from_solve_pnp_pose, solve_pnp};
 use crate::types::{
@@ -46,17 +49,19 @@ struct MultiViewPair {
 /// # Inputs
 /// - `landmarks` / `observations`: matched by string `id` (same length required)
 /// - `rig`: calibrated multi-view rig; `from_primary` in **OpenCV** convention
-/// - `method`: monocular solver used only for the primary-view seed
+/// - `method`: monocular solver used for the seed (primary preferred; otherwise
+///   richest view with enough points)
 ///
 /// Missing pixels in any view are skipped in the joint residual. The seed
-/// requires enough **primary** observations for the chosen monocular method.
+/// needs enough observations in **some** view for the chosen monocular method
+/// (primary preferred when it meets the minimum).
 ///
 /// # Returns
 /// Object pose in **OpenGL** (primary view), same meaning as [`solve_pnp`].
 ///
 /// # Errors
 /// - [`PnpError::MismatchedCounts`] — length, pixel-vector length, or id mismatch
-/// - [`PnpError::InsufficientPoints`] — too few projections / primary seed points
+/// - [`PnpError::InsufficientPoints`] — too few projections / seed points
 /// - [`PnpError::SolverFailed`] — seed or numerical failure
 pub fn solve_pnp_multiview(
     landmarks: &[Landmark],
@@ -71,18 +76,8 @@ pub fn solve_pnp_multiview(
         return Err(PnpError::InsufficientPoints);
     }
 
-    // --- Seed: monocular PnP on primary-view observations ---
-    let (primary_landmarks, primary_obs) = primary_mono_inputs(landmarks, observations);
-    if primary_obs.is_empty() {
-        return Err(PnpError::InsufficientPoints);
-    }
-    let seed_gl = solve_pnp(
-        &primary_landmarks,
-        &primary_obs,
-        &rig.primary().camera,
-        method,
-    )?;
-    let seed_cv = pose_tools::from_opengl_to_opencv(&seed_gl);
+    // --- Seed: mono PnP on primary, or richest eligible view if primary sparse ---
+    let seed_cv = seed_object_pose_cv(landmarks, observations, rig, method)?;
     let (mut rvec, mut tvec) = pose_to_rvec_tvec(&seed_cv);
 
     // --- Joint LM (finite-difference Jacobian) ---
@@ -142,28 +137,88 @@ fn match_multiview_correspondences(
     Ok(pairs)
 }
 
-fn primary_mono_inputs(
+/// Minimum monocular correspondences required by [`solve_pnp`] for `method`.
+fn min_mono_points(method: SolvePnpMethod) -> usize {
+    match method {
+        SolvePnpMethod::SQPnP => 3,
+        _ => 4,
+    }
+}
+
+/// Collect monocular landmarks/observations for view index `view_idx`.
+fn view_mono_inputs(
     landmarks: &[Landmark],
     observations: &[MultiViewObservation],
+    view_idx: usize,
 ) -> (Vec<Landmark>, Vec<LandmarkObservation>) {
     let mut lms = Vec::new();
     let mut obs_out = Vec::new();
     for obs in observations {
-        let primary_px = obs.pixels.first().and_then(|p| *p);
-        if let Some(px) = primary_px {
-            if let Some(lm) = landmarks.iter().find(|l| l.id == obs.id) {
-                lms.push(Landmark {
-                    id: lm.id.clone(),
-                    position: lm.position,
-                });
-                obs_out.push(LandmarkObservation {
-                    id: obs.id.clone(),
-                    position: px,
-                });
-            }
+        let Some(px) = obs.pixels.get(view_idx).and_then(|p| *p) else {
+            continue;
+        };
+        if let Some(lm) = landmarks.iter().find(|l| l.id == obs.id) {
+            lms.push(Landmark {
+                id: lm.id.clone(),
+                position: lm.position,
+            });
+            obs_out.push(LandmarkObservation {
+                id: obs.id.clone(),
+                position: px,
+            });
         }
     }
     (lms, obs_out)
+}
+
+/// Pick seed view: primary if it has ≥ min points; else richest view ≥ min.
+fn select_seed_view(
+    landmarks: &[Landmark],
+    observations: &[MultiViewObservation],
+    n_views: usize,
+    method: SolvePnpMethod,
+) -> Option<usize> {
+    let min_pts = min_mono_points(method);
+    let counts: Vec<usize> = (0..n_views)
+        .map(|c| view_mono_inputs(landmarks, observations, c).1.len())
+        .collect();
+
+    if counts.first().copied().unwrap_or(0) >= min_pts {
+        return Some(0);
+    }
+
+    counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &n)| n >= min_pts)
+        .max_by_key(|(idx, n)| (*n, core::cmp::Reverse(*idx))) // more pts; tie → lower idx
+        .map(|(idx, _)| idx)
+}
+
+/// Monocular seed in OpenCV **object-in-primary** frame.
+///
+/// If the seed view is not primary, transport:
+/// `T_primary = inv(from_primary_c) ∘ T_view_c` (apply `T_view_c` then inv).
+fn seed_object_pose_cv(
+    landmarks: &[Landmark],
+    observations: &[MultiViewObservation],
+    rig: &MultiViewRig,
+    method: SolvePnpMethod,
+) -> Result<Pose, PnpError> {
+    let seed_view = select_seed_view(landmarks, observations, rig.num_views(), method)
+        .ok_or(PnpError::InsufficientPoints)?;
+
+    let (lms, mono_obs) = view_mono_inputs(landmarks, observations, seed_view);
+    let seed_gl = solve_pnp(&lms, &mono_obs, &rig.views[seed_view].camera, method)?;
+    let seed_in_view_cv = pose_tools::from_opengl_to_opencv(&seed_gl);
+
+    if seed_view == 0 {
+        return Ok(seed_in_view_cv);
+    }
+
+    // T_p = inv(T_{c←primary}) * T_c
+    let from_primary = &rig.views[seed_view].from_primary;
+    Ok(compose_poses(&invert_pose(from_primary), &seed_in_view_cv))
 }
 
 fn count_projections(pairs: &[MultiViewPair]) -> usize {

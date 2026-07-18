@@ -1,7 +1,9 @@
 //! Calibrated stereo rig: two monocular cameras + fixed extrinsics.
 //!
 //! # Frames
-//! - **Left camera** is the primary frame for triangulation and stereo PnP seeds.
+//! - **Left camera** is the primary frame for triangulation and returned poses.
+//!   Stereo PnP seeds prefer the left view; if left is sparse, the seed may
+//!   use the right view (pose transported into left via `right_from_left`).
 //! - `right_from_left` is the pose of the **right** camera expressed in the
 //!   **left** camera frame: a point in left coords maps to right as
 //!   `X_right = R * X_left + t` where `(R,t)` come from `right_from_left`.

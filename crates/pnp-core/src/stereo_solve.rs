@@ -35,10 +35,12 @@ fn stereo_obs_to_multiview(
 /// # Inputs
 /// - `landmarks` / `observations`: matched by string `id` (same length required)
 /// - `rig`: calibrated stereo pair; `right_from_left` in **OpenCV** convention
-/// - `method`: monocular solver used only for the left-view seed
+/// - `method`: monocular solver used for the seed (left preferred; right if
+///   left is sparse and right has enough points)
 ///
 /// Missing left or right pixels are skipped in the joint residual. The seed
-/// requires enough **left** observations for the chosen monocular method.
+/// prefers the left view when it has enough points for `method`; otherwise
+/// seeds from the right and transports the pose into the left (primary) frame.
 ///
 /// # Returns
 /// Object pose in **OpenGL** (primary view = left camera), same meaning as
@@ -46,7 +48,7 @@ fn stereo_obs_to_multiview(
 ///
 /// # Errors
 /// - [`PnpError::MismatchedCounts`] — length or id mismatch
-/// - [`PnpError::InsufficientPoints`] — too few projections / left seed points
+/// - [`PnpError::InsufficientPoints`] — too few projections / seed points
 /// - [`PnpError::SolverFailed`] — seed or numerical failure
 ///
 /// Implemented as a thin wrapper over [`solve_pnp_multiview`] (N=2).

@@ -66,6 +66,32 @@ pub fn invert_pose(pose: &Pose) -> Pose {
     )
 }
 
+/// Compose rigid poses: `compose_poses(a, b) = a ∘ b` (**apply `b` then `a`**).
+///
+/// For a point `p`:
+/// ```text
+/// X' = R_a (R_b X + t_b) + t_a
+///    = (R_a R_b) X + (R_a t_b + t_a)
+/// ```
+///
+/// Frame-agnostic on the stored components. Multiview seed transport uses
+/// OpenCV poses: `T_primary = compose_poses(invert_pose(from_primary_c), T_c)`.
+pub fn compose_poses(a: &Pose, b: &Pose) -> Pose {
+    let ra = a.rotation.normalize().to_na_unit();
+    let rb = b.rotation.normalize().to_na_unit();
+    let r = ra * rb;
+
+    let tb = NaVector3::new(b.position.x, b.position.y, b.position.z);
+    let ta = NaVector3::new(a.position.x, a.position.y, a.position.z);
+    let t = ra * tb + ta;
+
+    let q = r.quaternion();
+    Pose::new(
+        Vector3::new(t.x, t.y, t.z),
+        Quaternion::new(q.i, q.j, q.k, q.w),
+    )
+}
+
 /// Apply rigid transform: `R * p + t` using pose rotation as a unit quaternion.
 ///
 /// OpenCV/OpenGL-agnostic math on the pose components as stored. Stereo
@@ -229,5 +255,34 @@ mod tests {
         let pose = Pose::new(Vector3::new(1.0, 2.0, 3.0), Quaternion::identity());
         let out = transform_point(&pose, Vector3::new(0.0, 0.0, 0.0));
         assert!((out.x - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compose_poses_applies_b_then_a() {
+        // a: translate +1 on X; b: translate +2 on Y → combined +1 X, +2 Y
+        let a = Pose::new(Vector3::new(1.0, 0.0, 0.0), Quaternion::identity());
+        let b = Pose::new(Vector3::new(0.0, 2.0, 0.0), Quaternion::identity());
+        let ab = compose_poses(&a, &b);
+        assert!((ab.position.x - 1.0).abs() < 1e-12);
+        assert!((ab.position.y - 2.0).abs() < 1e-12);
+        assert!(ab.position.z.abs() < 1e-12);
+
+        let p = Vector3::new(3.0, 4.0, 5.0);
+        let via_compose = transform_point(&ab, p);
+        let via_chain = transform_point(&a, transform_point(&b, p));
+        assert!((via_compose.x - via_chain.x).abs() < 1e-12);
+        assert!((via_compose.y - via_chain.y).abs() < 1e-12);
+        assert!((via_compose.z - via_chain.z).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compose_with_inverse_is_identity() {
+        let pose = Pose::new(
+            Vector3::new(1.0, -2.0, 3.0),
+            Quaternion::new(0.2, -0.3, 0.5, 0.78).normalize(),
+        );
+        let inv = invert_pose(&pose);
+        let id = compose_poses(&inv, &pose);
+        assert!(poses_close(&id, &Pose::identity(), 1e-12, 1e-12));
     }
 }

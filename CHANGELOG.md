@@ -18,12 +18,13 @@
   `auki:pnp@0.2.0`.
 - **Stereo (calibrated left+right):**
   - Core: `StereoRig` / `StereoLandmarkObservation`, `solve_pnp_stereo` /
-    `solve_pnp_stereo_camera_pose` (mono left seed + joint LM), midpoint
+    `solve_pnp_stereo_camera_pose` (mono seed + joint LM), midpoint
     `triangulate_midpoint`, `estimate_square_pose_from_stereo_pixels`, and
     Umeyama `absolute_orientation` helper. Left is primary; public stereo
     poses are **OpenGL** (same as mono); `right_from_left` is **OpenCV**
     extrinsics; triangulation returns left-OpenCV 3D. Partial observations
-    (missing left or right pixel) are supported in the joint residual.
+    (missing left or right pixel) are supported in the joint residual. Seed
+    prefers left; right-only seeds when right has enough points for the method.
   - C FFI: `pnp_stereo_rig_t`, `pnp_stereo_observation_t`,
     `peyote_pnp_solve_stereo`, `peyote_pnp_triangulate` (header via cbindgen).
   - Python: `solve_pnp_stereo`, `solve_pnp_stereo_camera_pose`, `triangulate`.
