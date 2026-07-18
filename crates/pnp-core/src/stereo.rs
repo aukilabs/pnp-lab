@@ -4,8 +4,10 @@
 //! - **Left camera** is the primary frame for triangulation and stereo PnP seeds.
 //! - `right_from_left` is the pose of the **right** camera expressed in the
 //!   **left** camera frame: a point in left coords maps to right as
-//!   `X_right = R * X_left + t` where `(R,t)` come from `right_from_left`
-//!   in OpenCV convention when used inside solvers.
+//!   `X_right = R * X_left + t` where `(R,t)` come from `right_from_left`.
+//! - **Stereo internal math uses OpenCV-frame poses** for `right_from_left`
+//!   (+Z forward, Y down in image). Pixel→ray conversion for stereo must use
+//!   [`Camera::unproject_opencv_ray`], not [`Camera::unproject_opengl_ray`].
 //!
 //! Callers building a rig from device calibration must convert into this
 //! convention before constructing [`StereoRig`].

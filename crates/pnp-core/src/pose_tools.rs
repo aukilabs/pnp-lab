@@ -66,6 +66,20 @@ pub fn invert_pose(pose: &Pose) -> Pose {
     )
 }
 
+/// Apply rigid transform: `R * p + t` using pose rotation as a unit quaternion.
+///
+/// OpenCV/OpenGL-agnostic math on the pose components as stored. Stereo
+/// internal math stores `right_from_left` in the **OpenCV** camera frame.
+pub fn transform_point(pose: &Pose, p: Vector3) -> Vector3 {
+    let uq = pose.rotation.normalize().to_na_unit();
+    let rotated = uq * nalgebra::Vector3::new(p.x, p.y, p.z);
+    Vector3::new(
+        rotated.x + pose.position.x,
+        rotated.y + pose.position.y,
+        rotated.z + pose.position.z,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +222,12 @@ mod tests {
             back.position,
             quaternion_angle_between(&pose.rotation, &back.rotation),
         );
+    }
+
+    #[test]
+    fn transform_point_translates() {
+        let pose = Pose::new(Vector3::new(1.0, 2.0, 3.0), Quaternion::identity());
+        let out = transform_point(&pose, Vector3::new(0.0, 0.0, 0.0));
+        assert!((out.x - 1.0).abs() < 1e-12);
     }
 }

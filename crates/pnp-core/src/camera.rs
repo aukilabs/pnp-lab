@@ -153,6 +153,26 @@ impl Camera {
         }
     }
 
+    /// Pixel → ray in **OpenCV** camera frame (look +Z, Y down in image).
+    ///
+    /// After optional undistortion: direction
+    /// `((u − cx) / fx, (v − cy) / fy, 1)`, origin at the camera.
+    ///
+    /// Used by stereo triangulation. Do **not** use
+    /// [`Self::unproject_opengl_ray`] for OpenCV-frame stereo math (that
+    /// flips Y and uses `z = −1`).
+    pub fn unproject_opencv_ray(&self, pixel: Vector2) -> Ray3 {
+        let p = self.undistort_pixel(pixel);
+        Ray3 {
+            origin: Vector3::new(0.0, 0.0, 0.0),
+            direction: Vector3::new(
+                (p.x - self.cx) / self.fx,
+                (p.y - self.cy) / self.fy,
+                1.0,
+            ),
+        }
+    }
+
     /// Normalized-plane distortion (OpenCV Brown–Conrady / rational).
     fn distort_normalized(&self, x: f64, y: f64) -> (f64, f64) {
         if !self.has_distortion() {
@@ -250,6 +270,15 @@ mod tests {
         assert!((ray.direction.x).abs() < EPS);
         assert!((ray.direction.y).abs() < EPS);
         assert!((ray.direction.z + 1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn opencv_ray_principal_point_is_forward_z() {
+        let cam = Camera::pinhole(100.0, 100.0, 50.0, 40.0).unwrap();
+        let ray = cam.unproject_opencv_ray(Vector2::new(50.0, 40.0));
+        assert!((ray.direction.x).abs() < 1e-12);
+        assert!((ray.direction.y).abs() < 1e-12);
+        assert!((ray.direction.z - 1.0).abs() < 1e-12);
     }
 
     #[test]
