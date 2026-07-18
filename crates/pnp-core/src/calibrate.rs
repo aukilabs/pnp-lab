@@ -1,11 +1,19 @@
-//! Multi-view monocular camera calibration: public types, validation, square
+//! Multi-view monocular camera calibration: Zhang-style init + joint BA.
+//!
+//! Public entry point: [`calibrate_camera`]. Internals cover validation, square
 //! planar object points, planar homography DLT, Zhang initial intrinsics,
 //! BA parameter packing / RMS, and joint Levenberg–Marquardt refinement.
 //!
-//! This module exposes configuration / result types, input checks, private
-//! init helpers (homography DLT + Zhang closed-form `K`), state packing that
-//! maps free intrinsics, distortion coefficients, and per-view OpenCV
-//! rvec/tvec into a flat parameter vector, and pinhole-first joint LM refine.
+//! # Pipeline ([`calibrate_camera`])
+//!
+//! 1. Validate inputs  
+//! 2. If object points are planar (`Z ≈ 0`), estimate a homography per view  
+//! 3. Zhang closed-form `K` from ≥3 homographies, else focal/image-center fallback  
+//! 4. Apply option flags (`fix_aspect_ratio`, `fix_principal_point`)  
+//! 5. Seed zero distortion of packed length  
+//! 6. Per-view [`crate::solve_pnp`] pose seeds (OpenCV rvec/tvec); drop failures  
+//! 7. Joint LM refine of free intrinsics, distortion, and poses  
+//! 8. Optional hard fail on RMS; return [`CalibrationResult`] (OpenGL poses)
 //!
 //! # Joint LM (v1)
 //!
@@ -20,7 +28,12 @@
 use crate::camera::Camera;
 use crate::pose_tools;
 use crate::rodrigues;
-use crate::types::{rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Vector2, Vector3};
+use crate::solve::solve_pnp;
+use crate::types::{
+    rotation_matrix_to_quaternion, Landmark, LandmarkObservation, Matrix3x3, PnpError, Pose,
+    SolvePnpMethod, Vector2, Vector3,
+};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3 as NaVector3};
@@ -136,8 +149,6 @@ pub fn square_object_points(physical_size: f64) -> Result<[Vector3; 4], PnpError
 /// | `object_points.len() < 4` | [`PnpError::InsufficientPoints`] |
 /// | non-finite object or image coordinates | [`PnpError::SolverFailed`] |
 /// | `dist_len` not in `{0, 2, 4, 5, 8}` | [`PnpError::SolverFailed`] |
-// Used by the public calibrate entry points (Task 3+); keep reachable from tests now.
-#[allow(dead_code)]
 pub(crate) fn validate_calibrate_inputs(
     object_points: &[Vector3],
     views: &[CalibrationView],
@@ -179,9 +190,16 @@ pub(crate) fn validate_calibrate_inputs(
     Ok(())
 }
 
-#[allow(dead_code)] // only referenced via validate_calibrate_inputs for now
 fn is_finite_vec3(v: &Vector3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+/// Absolute threshold for treating object points as planar on Z = 0.
+const PLANAR_Z_EPS: f64 = 1e-9;
+
+/// True when every object point has `|Z| < PLANAR_Z_EPS` (Zhang path eligible).
+fn object_points_planar_z0(object_points: &[Vector3]) -> bool {
+    object_points.iter().all(|p| p.z.abs() < PLANAR_Z_EPS)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +238,6 @@ const HOMOGRAPHY_H22_EPS: f64 = 1e-12;
 /// | fewer than 4 pairs | [`PnpError::InsufficientPoints`] |
 /// | non-finite coordinates | [`PnpError::SolverFailed`] |
 /// | collinear object or image points, or degenerate `H` | [`PnpError::SolverFailed`] |
-// Used by Zhang init (Task 3+); keep reachable from unit tests now.
-#[allow(dead_code)]
 fn estimate_homography_dlt(
     object_xy: &[(f64, f64)],
     image_uv: &[Vector2],
@@ -462,8 +478,6 @@ fn zhang_fallback_intrinsics(image_width: u32, image_height: u32) -> (f64, f64, 
 /// | Condition | Error |
 /// |-----------|--------|
 /// | fewer than 3 homographies | [`PnpError::InsufficientPoints`] |
-// Used by the public calibrate pipeline (later tasks); unit-tested now.
-#[allow(dead_code)]
 fn zhang_initial_intrinsics(
     homographies: &[Matrix3<f64>],
     image_width: u32,
@@ -629,8 +643,6 @@ impl CalibLayout {
     ///
     /// `fixed_cx` / `fixed_cy` are only applied when
     /// `options.fix_principal_point` (typically image center or seed `K`).
-    // Wired by refine / public calibrate (tests exercise now).
-    #[allow(dead_code)]
     fn new(options: &CalibrateOptions, n_views: usize, fixed_cx: f64, fixed_cy: f64) -> Self {
         Self {
             fix_aspect_ratio: options.fix_aspect_ratio,
@@ -684,8 +696,6 @@ fn free_dist_from_camera(camera: &Camera, dist_len: usize) -> Vec<f64> {
 ///
 /// Returns [`PnpError::SolverFailed`] if `dist_len` is unsupported, `dist_free`
 /// length mismatches `dist_len`, or [`Camera::new`] rejects the values.
-// Wired by refine / public calibrate (tests exercise now).
-#[allow(dead_code)]
 fn camera_from_params(
     fx: f64,
     fy: f64,
@@ -721,8 +731,6 @@ fn camera_from_params(
 /// Length must equal `layout.n_views`. When aspect is fixed, only `camera.fx`
 /// is packed (`fy` is forced to `fx` on unpack). When the principal point is
 /// fixed, `cx`/`cy` are not packed (see [`CalibLayout::fixed_cx`]).
-// Wired by refine / public calibrate (tests exercise now).
-#[allow(dead_code)]
 fn pack_state(layout: &CalibLayout, camera: &Camera, poses_cv: &[CvRvecTvec]) -> Vec<f64> {
     debug_assert_eq!(poses_cv.len(), layout.n_views);
     let mut params = Vec::with_capacity(layout.n_params());
@@ -757,8 +765,6 @@ fn pack_state(layout: &CalibLayout, camera: &Camera, poses_cv: &[CvRvecTvec]) ->
 ///
 /// Returns [`PnpError::SolverFailed`] if `params.len()` does not match the
 /// layout, or if [`camera_from_params`] rejects the values.
-// Wired by refine / public calibrate (tests exercise now).
-#[allow(dead_code)]
 fn unpack_state(
     params: &[f64],
     layout: &CalibLayout,
@@ -806,7 +812,6 @@ fn unpack_state(
 }
 
 /// Convert an OpenCV [`Pose`] to Rodrigues `rvec` + `tvec`.
-#[allow(dead_code)] // seed packing from solve_pnp (later public pipeline)
 fn pose_cv_to_rvec_tvec(pose: &Pose) -> CvRvecTvec {
     let r_mat = pose.rotation.normalize().to_na_unit().to_rotation_matrix();
     let m = Matrix3x3::from_na(r_mat.matrix());
@@ -816,8 +821,6 @@ fn pose_cv_to_rvec_tvec(pose: &Pose) -> CvRvecTvec {
 }
 
 /// Convert Rodrigues `rvec` + `tvec` to an OpenCV [`Pose`].
-// Wired by refine / public calibrate (tests exercise now).
-#[allow(dead_code)]
 fn rvec_tvec_to_pose_cv(rvec: &[f64; 3], tvec: &NaVector3<f64>) -> Pose {
     let rot_m = rodrigues::rvec_to_rotation_matrix(rvec);
     let q = rotation_matrix_to_quaternion(&rot_m);
@@ -840,8 +843,6 @@ fn rvec_tvec_to_pose_cv(rvec: &[f64; 3], tvec: &NaVector3<f64>) -> Pose {
 ///
 /// `poses_cv` and `views` must have the same length; each view's image list
 /// should match `object_points` length (callers validate inputs earlier).
-// Wired by refine / public calibrate (tests exercise now).
-#[allow(dead_code)]
 fn rms_reprojection(
     object_points: &[Vector3],
     views: &[CalibrationView],
@@ -899,24 +900,18 @@ fn rms_reprojection(
 // ---------------------------------------------------------------------------
 // Joint Levenberg–Marquardt refinement
 // ---------------------------------------------------------------------------
-// Private until Task 6 public calibrate_camera pipeline; unit-tested here.
-#[allow(dead_code)]
+
 const LM_LAMBDA0: f64 = 1e-3;
-#[allow(dead_code)]
 const LM_LAMBDA_FACTOR: f64 = 10.0;
-#[allow(dead_code)]
 const LM_PARAM_CONV: f64 = 1e-8;
-#[allow(dead_code)]
 const LM_FD_EPS: f64 = 1e-6;
 /// Residual magnitude when a point fails to project (behind camera).
-#[allow(dead_code)]
 const LM_BAD_RESIDUAL: f64 = 1e6;
 
 /// Stacked reprojection residuals: length `2 * n_views * n_points`.
 ///
 /// Order is view-major, then point-major, then `(dx, dy)` per point — same
 /// residual definition as [`rms_reprojection`].
-#[allow(dead_code)]
 fn calib_residuals(
     object_points: &[Vector3],
     views: &[CalibrationView],
@@ -960,13 +955,11 @@ fn calib_residuals(
     residuals
 }
 
-#[allow(dead_code)]
 fn residual_cost(residuals: &DVector<f64>) -> f64 {
     residuals.iter().map(|r| r * r).sum()
 }
 
 /// Residuals for a packed state vector (large residual vector if unpack fails).
-#[allow(dead_code)]
 fn residuals_from_params(
     params: &[f64],
     layout: &CalibLayout,
@@ -981,7 +974,6 @@ fn residuals_from_params(
 }
 
 /// Central finite-difference Jacobian of residuals w.r.t. free packed params.
-#[allow(dead_code)]
 fn calib_jacobian_fd(
     params: &[f64],
     layout: &CalibLayout,
@@ -1027,8 +1019,6 @@ fn calib_jacobian_fd(
 /// - Non-finite refined parameters → [`PnpError::SolverFailed`]
 /// - `options.rms_success_threshold` exceeded after refine →
 ///   [`PnpError::SolverFailed`]
-// Private until Task 6 public calibrate_camera pipeline; unit-tested here.
-#[allow(dead_code)]
 fn refine_calibration_lm(
     object_points: &[Vector3],
     views: &[CalibrationView],
@@ -1170,6 +1160,146 @@ fn refine_calibration_lm(
         .collect();
 
     Ok((camera, object_poses, overall_rms, per_view_rms))
+}
+
+// ---------------------------------------------------------------------------
+// Public pipeline
+// ---------------------------------------------------------------------------
+
+/// Multi-view monocular calibration: Zhang (or fallback) init + joint LM.
+///
+/// Estimates a single shared [`Camera`] (intrinsics + optional distortion) and
+/// per-view **OpenGL** object poses from many observations of the same known
+/// 3D object points.
+///
+/// # Inputs
+///
+/// - `object_points`: shared 3D model points (same order every view). Planar
+///   targets with `Z ≈ 0` enable Zhang homography init.
+/// - `views`: one [`CalibrationView`] per image; `image_points` parallel to
+///   `object_points`. Pixels are OpenCV (top-left origin, +Y down), distorted.
+/// - `image_width` / `image_height`: sensor size in pixels (principal-point
+///   fallback / fixed-pp lock use the image center).
+/// - `options`: free-parameter flags, `dist_len`, LM controls, optional RMS
+///   hard fail.
+///
+/// # Pipeline
+///
+/// 1. [`validate_calibrate_inputs`]  
+/// 2. If planar `Z≈0`, DLT homography per view (failed views skip Zhang only)  
+/// 3. ≥3 valid `H` → Zhang `K`; else `fx=fy=max(w,h)`, `cx=w/2`, `cy=h/2`  
+/// 4. Apply `fix_aspect_ratio` / `fix_principal_point`  
+/// 5. Seed `Camera` with zero free distortion of length `dist_len`  
+/// 6. [`solve_pnp`] (Iterative) per view → OpenCV rvec/tvec; drop PnP failures  
+/// 7. If remaining views `< min_views` → [`PnpError::InsufficientPoints`]  
+/// 8. [`refine_calibration_lm`] (OpenGL poses out)  
+/// 9. Optional `rms_success_threshold` → [`PnpError::SolverFailed`]
+///
+/// # Errors
+///
+/// Propagates validation, init, PnP-insufficient-views, LM, and RMS failures
+/// as [`PnpError`].
+pub fn calibrate_camera(
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+    image_width: u32,
+    image_height: u32,
+    options: &CalibrateOptions,
+) -> Result<CalibrationResult, PnpError> {
+    validate_calibrate_inputs(object_points, views, image_width, image_height, options)?;
+
+    // Zhang path only when the model is planar on Z = 0.
+    let mut homographies = Vec::new();
+    if object_points_planar_z0(object_points) {
+        let object_xy: Vec<(f64, f64)> = object_points.iter().map(|p| (p.x, p.y)).collect();
+        for view in views {
+            if let Ok(h) = estimate_homography_dlt(&object_xy, &view.image_points) {
+                homographies.push(h);
+            }
+        }
+    }
+
+    let (fx, mut fy, mut cx, mut cy) = if homographies.len() >= ZHANG_MIN_HOMOGRAPHIES {
+        zhang_initial_intrinsics(&homographies, image_width, image_height)?
+    } else {
+        zhang_fallback_intrinsics(image_width, image_height)
+    };
+
+    if options.fix_aspect_ratio {
+        fy = fx;
+    }
+    if options.fix_principal_point {
+        cx = image_width as f64 * 0.5;
+        cy = image_height as f64 * 0.5;
+    }
+
+    // Zero free-distortion seed; packing maps dist_len into Camera.dist.
+    let dist_free = vec![0.0; options.dist_len];
+    let camera0 = camera_from_params(fx, fy, cx, cy, &dist_free, options.dist_len)?;
+
+    let landmarks: Vec<Landmark> = object_points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| Landmark {
+            id: i.to_string(),
+            position: *p,
+        })
+        .collect();
+
+    let mut used_views: Vec<CalibrationView> = Vec::with_capacity(views.len());
+    let mut poses_cv0: Vec<CvRvecTvec> = Vec::with_capacity(views.len());
+
+    for view in views {
+        let observations: Vec<LandmarkObservation> = view
+            .image_points
+            .iter()
+            .enumerate()
+            .map(|(i, uv)| LandmarkObservation {
+                id: i.to_string(),
+                position: *uv,
+            })
+            .collect();
+
+        match solve_pnp(
+            &landmarks,
+            &observations,
+            &camera0,
+            SolvePnpMethod::Iterative,
+        ) {
+            Ok(pose_gl) => {
+                let pose_cv = pose_tools::from_opengl_to_opencv(&pose_gl);
+                poses_cv0.push(pose_cv_to_rvec_tvec(&pose_cv));
+                used_views.push(CalibrationView {
+                    image_points: view.image_points.clone(),
+                });
+            }
+            Err(_) => {
+                // Drop views that fail monocular PnP with the seed camera.
+            }
+        }
+    }
+
+    if used_views.len() < options.min_views {
+        return Err(PnpError::InsufficientPoints);
+    }
+
+    let (camera, object_poses, rms, per_view_rms) = refine_calibration_lm(
+        object_points,
+        &used_views,
+        image_width,
+        image_height,
+        options,
+        camera0,
+        poses_cv0,
+    )?;
+
+    Ok(CalibrationResult {
+        camera,
+        rms_reprojection_error: rms,
+        per_view_rms,
+        object_poses,
+        views_used: used_views.len(),
+    })
 }
 
 #[cfg(test)]
@@ -1891,5 +2021,97 @@ mod tests {
         );
         assert!(cam_est.dist.is_empty());
         assert_eq!(poses_gl.len(), true_poses.len());
+    }
+
+    #[test]
+    fn calibrate_camera_recovers_pinhole_synthetic() {
+        // N=10 views, varied tilt, 3×3 grid on Z=0, noise-free pinhole.
+        let fx_true = 800.0;
+        let fy_true = 800.0; // fix_aspect_ratio=true
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let cam_true = Camera::pinhole(fx_true, fy_true, cx_true, cy_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let object = planar_grid_3x3(0.1);
+
+        let true_poses: [CvRvecTvec; 10] = [
+            ([0.15, -0.10, 0.05], NaVector3::new(0.02, -0.01, 0.55)),
+            ([-0.20, 0.18, -0.08], NaVector3::new(-0.03, 0.02, 0.62)),
+            ([0.10, 0.25, 0.12], NaVector3::new(0.01, 0.0, 0.48)),
+            ([0.30, -0.05, -0.15], NaVector3::new(-0.02, 0.03, 0.70)),
+            ([-0.12, -0.22, 0.08], NaVector3::new(0.04, -0.02, 0.58)),
+            ([0.05, 0.12, -0.20], NaVector3::new(0.0, 0.01, 0.52)),
+            ([0.28, 0.15, 0.10], NaVector3::new(-0.01, 0.02, 0.60)),
+            ([-0.25, -0.15, -0.05], NaVector3::new(0.03, -0.01, 0.65)),
+            ([0.18, -0.28, 0.15], NaVector3::new(-0.02, 0.0, 0.50)),
+            ([-0.08, 0.30, -0.12], NaVector3::new(0.01, 0.03, 0.57)),
+        ];
+
+        let mut views = Vec::with_capacity(true_poses.len());
+        for (rvec, tvec) in &true_poses {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut image_points = Vec::with_capacity(object.len());
+            for p in &object {
+                let pc = r * p.to_na() + tvec;
+                let uv = cam_true
+                    .project(Vector3::from_na(&pc))
+                    .expect("in front of camera");
+                image_points.push(uv);
+            }
+            views.push(CalibrationView { image_points });
+        }
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 0,
+            max_iterations: 100,
+            function_tolerance: 1e-12,
+            rms_success_threshold: None,
+        };
+
+        let result = calibrate_camera(&object, &views, image_width, image_height, &opts)
+            .expect("calibrate_camera should succeed");
+
+        assert_eq!(result.views_used, true_poses.len());
+        assert_eq!(result.object_poses.len(), true_poses.len());
+        assert_eq!(result.per_view_rms.len(), true_poses.len());
+        assert!(
+            result.rms_reprojection_error < 1e-2,
+            "RMS={}",
+            result.rms_reprojection_error
+        );
+        for (i, r) in result.per_view_rms.iter().enumerate() {
+            assert!(*r < 1e-2, "view {i} RMS={r}");
+        }
+
+        let fx_rel = (result.camera.fx - fx_true).abs() / fx_true;
+        let fy_rel = (result.camera.fy - fy_true).abs() / fy_true;
+        assert!(
+            fx_rel < 1e-3,
+            "fx rel err={fx_rel} (est={}, true={fx_true})",
+            result.camera.fx
+        );
+        assert!(
+            fy_rel < 1e-3,
+            "fy rel err={fy_rel} (est={}, true={fy_true})",
+            result.camera.fy
+        );
+        assert!(
+            (result.camera.cx - cx_true).abs() < 0.5,
+            "cx err={}",
+            (result.camera.cx - cx_true).abs()
+        );
+        assert!(
+            (result.camera.cy - cy_true).abs() < 0.5,
+            "cy err={}",
+            (result.camera.cy - cy_true).abs()
+        );
+        assert!(result.camera.dist.is_empty());
+        // Fixed aspect: fy == fx after estimate.
+        assert!((result.camera.fx - result.camera.fy).abs() < 1e-9);
     }
 }
