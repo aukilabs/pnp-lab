@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Auto-fix formatting (and re-stage) so CI `cargo fmt --check` does not fail.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Only run when this commit touches Rust sources (staged).
+staged_rs="$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)"
+if [[ -z "${staged_rs}" ]]; then
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-commit: cargo not found; install Rust or skip with --no-verify" >&2
+  exit 1
+fi
+
+if ! cargo fmt --version >/dev/null 2>&1; then
+  echo "pre-commit: rustfmt missing. Install with: rustup component add rustfmt" >&2
+  exit 1
+fi
+
+echo "pre-commit: cargo fmt --all"
+cargo fmt --all
+
+# Re-stage any staged .rs files that rustfmt rewrote so the commit includes fixes.
+while IFS= read -r f; do
+  [[ -z "${f}" ]] && continue
+  if [[ -f "${f}" ]]; then
+    git add -- "${f}"
+  fi
+done <<<"${staged_rs}"
+
+# Fail if anything still does not match rustfmt (defensive).
+if ! cargo fmt --all -- --check; then
+  echo "pre-commit: cargo fmt --check failed after auto-format" >&2
+  exit 1
+fi

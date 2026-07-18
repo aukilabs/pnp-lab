@@ -14,6 +14,11 @@ default:
 # Setup
 # ---------------------------------------------------------------------------
 
+# Point this clone at versioned hooks under .githooks/ (fmt on commit, etc.)
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "OK: core.hooksPath=.githooks (pre-commit will run cargo fmt)"
+
 # Check that all required (and optional) tools are installed
 setup:
     #!/usr/bin/env bash
@@ -288,6 +293,14 @@ python-test:
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
+
+# Format all Rust sources (same as pre-commit hook)
+fmt:
+    cargo fmt --all
+
+# Fail if any Rust file is not formatted (matches CI)
+fmt-check:
+    cargo fmt --all -- --check
 
 # Verify no_std compilation
 check-nostd:

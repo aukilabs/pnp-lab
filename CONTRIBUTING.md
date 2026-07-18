@@ -88,7 +88,11 @@ cargo install cargo-component
 
 ### Style and documentation
 
-- Format with `cargo fmt --all`.
+- Format with `cargo fmt --all` (or `just fmt`).
+- **Git hooks:** once per clone, run `just install-hooks` (sets
+  `core.hooksPath` to `.githooks/`). The `pre-commit` hook runs `cargo fmt
+  --all` and re-stages fixed `.rs` files so CI’s `cargo fmt --check` does
+  not fail on formatting. Bypass only when necessary: `git commit --no-verify`.
 - Document every **public** Rust item (`///` rustdoc). Module-level `//!`
   comments should describe purpose, conventions, and references.
 - Prefer clear names and short functions over cleverness.
@@ -122,7 +126,8 @@ just generate-reference
 Minimum for core Rust changes (matches CI):
 
 ```bash
-cargo fmt --all -- --check
+just install-hooks        # once per clone: versioned pre-commit (auto cargo fmt)
+just fmt-check            # or: cargo fmt --all -- --check
 cargo test --workspace --locked --exclude pnplab-python
 cargo check -p pnp-core --no-default-features --locked
 ```
@@ -133,6 +138,9 @@ the Python suite on every push and pull request.
 Broader recipes:
 
 ```bash
+just install-hooks        # enable .githooks (pre-commit fmt)
+just fmt                  # cargo fmt --all
+just fmt-check            # cargo fmt --check (CI)
 just check-all            # tests + no_std + clippy
 just test-core            # pnp-core unit tests only
 just test-integration     # OpenCV reference integration tests

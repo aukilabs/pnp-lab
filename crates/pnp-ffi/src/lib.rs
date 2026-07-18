@@ -912,15 +912,13 @@ mod tests {
             assert!(distance > 0.0);
         }
 
-        let insufficient =
-            unsafe { pnp_estimate_square_pose_from_rays(rays.as_ptr(), 3, 0.8) };
+        let insufficient = unsafe { pnp_estimate_square_pose_from_rays(rays.as_ptr(), 3, 0.8) };
         assert!(matches!(
             insufficient.error,
             pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS
         ));
 
-        let null_result =
-            unsafe { pnp_estimate_square_pose_from_rays(std::ptr::null(), 4, 0.8) };
+        let null_result = unsafe { pnp_estimate_square_pose_from_rays(std::ptr::null(), 4, 0.8) };
         assert!(matches!(
             null_result.error,
             pnp_error_t::PNP_ERROR_NULL_POINTER
