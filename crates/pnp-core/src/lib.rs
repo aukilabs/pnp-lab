@@ -15,6 +15,9 @@
 //! - Square-marker pose from four corner rays or image pixels
 //!   ([`estimate_square_pose_from_rays`], [`estimate_square_pose_from_pixels`],
 //!   [`estimate_square_pose_from_stereo_pixels`])
+//! - Multi-view monocular calibration types and square object points
+//!   ([`CalibrateOptions`], [`CalibrationView`], [`CalibrationResult`],
+//!   [`square_object_points`])
 //! - Calibrated monocular [`Camera`] with optional Brown–Conrady distortion
 //!
 //! ## Coordinate conventions
@@ -63,6 +66,7 @@
 extern crate alloc;
 
 pub mod absolute_orientation;
+pub mod calibrate;
 pub mod camera;
 pub mod epnp;
 pub mod iterative;
@@ -79,6 +83,7 @@ pub mod triangulate;
 pub mod types;
 
 pub use absolute_orientation::absolute_orientation;
+pub use calibrate::{square_object_points, CalibrateOptions, CalibrationResult, CalibrationView};
 pub use camera::Camera;
 pub use multiview::{CameraView, MultiViewObservation, MultiViewRig};
 pub use multiview_solve::{solve_pnp_multiview, solve_pnp_multiview_camera_pose};
