@@ -147,6 +147,28 @@ typedef struct pnp_stereo_rig_t {
     struct pnp_pose_t right_from_left;
 } pnp_stereo_rig_t;
 
+/**
+ * Options for multi-view monocular camera calibration.
+ *
+ * Matches `CalibrateOptions` in pnp-core. Defaults (when a null options
+ * pointer is passed to the calibrate entry point):
+ * `min_views = 3`, `fix_aspect_ratio = true`, `fix_principal_point = false`,
+ * `dist_len = 5`, `max_iterations = 100`, `function_tolerance = 1e-10`,
+ * `rms_success_threshold < 0` (disabled).
+ *
+ * `rms_success_threshold`: if `< 0` (or non-finite), no hard RMS failure;
+ * otherwise fail when overall RMS exceeds this value.
+ */
+typedef struct pnp_calibrate_options_t {
+    uintptr_t min_views;
+    bool fix_aspect_ratio;
+    bool fix_principal_point;
+    uintptr_t dist_len;
+    uintptr_t max_iterations;
+    double function_tolerance;
+    double rms_success_threshold;
+} pnp_calibrate_options_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -235,6 +257,49 @@ struct pnp_result_t peyote_pnp_solve_stereo(const struct pnp_landmark_t *landmar
                                             uintptr_t num_observations,
                                             const struct pnp_stereo_rig_t *rig,
                                             enum pnp_method_t method);
+
+/**
+ * Calibrate monocular intrinsics from multi-view square-marker corners.
+ *
+ * `corners` is a flat array of `num_views * 4` image points. Each view is four
+ * corners in **TL → TR → BR → BL** order (same as square pose estimation).
+ * `physical_size` is the square side length in the same units used for object
+ * points (typically meters).
+ *
+ * `options` may be null to use defaults (`min_views=3`, `fix_aspect_ratio=true`,
+ * `dist_len=5`, …). See [`pnp_calibrate_options_t`].
+ *
+ * # Output buffers (caller-owned)
+ *
+ * - `out_camera`: on entry, if distortion will be estimated (`dist_len > 0`),
+ *   set `out_camera.dist` to a writable buffer and `out_camera.dist_len` to its
+ *   capacity (at least the requested `dist_len`, max 8). On success fills
+ *   `fx/fy/cx/cy`, writes coefficients into `dist`, and sets `dist_len` to the
+ *   actual count (0 when pinhole). For pinhole (`dist_len=0`) `dist` may be null.
+ * - `out_rms`: overall RMS reprojection error in pixels.
+ * - `out_per_view_rms`: capacity ≥ `num_views`; first `*out_views_used` filled.
+ * - `out_poses`: capacity ≥ `num_views`; first `*out_views_used` OpenGL object
+ *   poses (same convention as `peyote_pnp_solve`).
+ * - `out_views_used`: number of views that contributed to the solution.
+ *
+ * There is no fixed max-views limit; allocate per-view buffers for `num_views`.
+ *
+ * # Safety
+ * `corners` must point to `num_views * 4` valid `pnp_vector2_t` when
+ * `num_views > 0`. All non-optional out pointers must be valid and writable.
+ * Output per-view buffers must have capacity ≥ `num_views`.
+ */
+enum pnp_error_t peyote_pnp_calibrate_from_square_views(const struct pnp_vector2_t *corners,
+                                                        uintptr_t num_views,
+                                                        double physical_size,
+                                                        uint32_t image_width,
+                                                        uint32_t image_height,
+                                                        const struct pnp_calibrate_options_t *options,
+                                                        struct pnp_camera_t *out_camera,
+                                                        double *out_rms,
+                                                        double *out_per_view_rms,
+                                                        struct pnp_pose_t *out_poses,
+                                                        uintptr_t *out_views_used);
 
 /**
  * Midpoint-triangulate a stereo correspondence into the left OpenCV frame.

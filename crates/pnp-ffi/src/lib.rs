@@ -130,6 +130,27 @@ pub enum pnp_error_t {
     PNP_ERROR_INVALID_STRING = 5,
 }
 
+/// Options for multi-view monocular camera calibration.
+///
+/// Matches `CalibrateOptions` in pnp-core. Defaults (when a null options
+/// pointer is passed to the calibrate entry point):
+/// `min_views = 3`, `fix_aspect_ratio = true`, `fix_principal_point = false`,
+/// `dist_len = 5`, `max_iterations = 100`, `function_tolerance = 1e-10`,
+/// `rms_success_threshold < 0` (disabled).
+///
+/// `rms_success_threshold`: if `< 0` (or non-finite), no hard RMS failure;
+/// otherwise fail when overall RMS exceeds this value.
+#[repr(C)]
+pub struct pnp_calibrate_options_t {
+    pub min_views: usize,
+    pub fix_aspect_ratio: bool,
+    pub fix_principal_point: bool,
+    pub dist_len: usize,
+    pub max_iterations: usize,
+    pub function_tolerance: f64,
+    pub rms_success_threshold: f64,
+}
+
 /// Result struct returned by solve functions.
 #[repr(C)]
 pub struct pnp_result_t {
@@ -317,6 +338,65 @@ fn err_result(error: pnp_error_t) -> pnp_result_t {
         error,
         pose: zero_pose(),
     }
+}
+
+fn default_calibrate_options() -> pnp_core::CalibrateOptions {
+    pnp_core::CalibrateOptions::default()
+}
+
+fn ffi_calibrate_options_to_core(opts: &pnp_calibrate_options_t) -> pnp_core::CalibrateOptions {
+    let rms = if opts.rms_success_threshold.is_finite() && opts.rms_success_threshold >= 0.0 {
+        Some(opts.rms_success_threshold)
+    } else {
+        None
+    };
+    pnp_core::CalibrateOptions {
+        min_views: opts.min_views,
+        fix_aspect_ratio: opts.fix_aspect_ratio,
+        fix_principal_point: opts.fix_principal_point,
+        dist_len: opts.dist_len,
+        max_iterations: opts.max_iterations,
+        function_tolerance: opts.function_tolerance,
+        rms_success_threshold: rms,
+    }
+}
+
+/// Write calibrated camera into a caller-owned `pnp_camera_t`.
+///
+/// On entry, `out_camera.dist_len` is the **capacity** of the buffer pointed to
+/// by `out_camera.dist` (ignored when the estimated distortion is empty).
+/// On exit, `dist_len` is the number of coefficients written.
+///
+/// # Safety
+/// `out_camera` must be valid and writable. If the result has non-empty
+/// distortion, `out_camera.dist` must point to a writable buffer of at least
+/// `out_camera.dist_len` doubles (entry capacity).
+unsafe fn write_camera_to_ffi(
+    cam: &pnp_core::Camera,
+    out_camera: *mut pnp_camera_t,
+) -> Result<(), pnp_error_t> {
+    let out = &mut *out_camera;
+    let capacity = out.dist_len;
+    out.fx = cam.fx;
+    out.fy = cam.fy;
+    out.cx = cam.cx;
+    out.cy = cam.cy;
+
+    let n = cam.dist.len();
+    if n == 0 {
+        out.dist_len = 0;
+        return Ok(());
+    }
+    if out.dist.is_null() {
+        return Err(pnp_error_t::PNP_ERROR_NULL_POINTER);
+    }
+    if capacity < n {
+        return Err(pnp_error_t::PNP_ERROR_MISMATCHED_COUNTS);
+    }
+    let dest = slice::from_raw_parts_mut(out.dist as *mut f64, capacity);
+    dest[..n].copy_from_slice(&cam.dist);
+    out.dist_len = n;
+    Ok(())
 }
 
 /// Estimate a planar square-marker pose from four corner rays.
@@ -591,6 +671,110 @@ pub unsafe extern "C" fn peyote_pnp_solve_stereo(
             pose: core_pose_to_ffi(&pose),
         },
         Err(e) => err_result(core_error_to_ffi(e)),
+    }
+}
+
+/// Calibrate monocular intrinsics from multi-view square-marker corners.
+///
+/// `corners` is a flat array of `num_views * 4` image points. Each view is four
+/// corners in **TL → TR → BR → BL** order (same as square pose estimation).
+/// `physical_size` is the square side length in the same units used for object
+/// points (typically meters).
+///
+/// `options` may be null to use defaults (`min_views=3`, `fix_aspect_ratio=true`,
+/// `dist_len=5`, …). See [`pnp_calibrate_options_t`].
+///
+/// # Output buffers (caller-owned)
+///
+/// - `out_camera`: on entry, if distortion will be estimated (`dist_len > 0`),
+///   set `out_camera.dist` to a writable buffer and `out_camera.dist_len` to its
+///   capacity (at least the requested `dist_len`, max 8). On success fills
+///   `fx/fy/cx/cy`, writes coefficients into `dist`, and sets `dist_len` to the
+///   actual count (0 when pinhole). For pinhole (`dist_len=0`) `dist` may be null.
+/// - `out_rms`: overall RMS reprojection error in pixels.
+/// - `out_per_view_rms`: capacity ≥ `num_views`; first `*out_views_used` filled.
+/// - `out_poses`: capacity ≥ `num_views`; first `*out_views_used` OpenGL object
+///   poses (same convention as `peyote_pnp_solve`).
+/// - `out_views_used`: number of views that contributed to the solution.
+///
+/// There is no fixed max-views limit; allocate per-view buffers for `num_views`.
+///
+/// # Safety
+/// `corners` must point to `num_views * 4` valid `pnp_vector2_t` when
+/// `num_views > 0`. All non-optional out pointers must be valid and writable.
+/// Output per-view buffers must have capacity ≥ `num_views`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_calibrate_from_square_views(
+    corners: *const pnp_vector2_t,
+    num_views: usize,
+    physical_size: f64,
+    image_width: u32,
+    image_height: u32,
+    options: *const pnp_calibrate_options_t,
+    out_camera: *mut pnp_camera_t,
+    out_rms: *mut f64,
+    out_per_view_rms: *mut f64,
+    out_poses: *mut pnp_pose_t,
+    out_views_used: *mut usize,
+) -> pnp_error_t {
+    if out_camera.is_null()
+        || out_rms.is_null()
+        || out_per_view_rms.is_null()
+        || out_poses.is_null()
+        || out_views_used.is_null()
+    {
+        return pnp_error_t::PNP_ERROR_NULL_POINTER;
+    }
+    if num_views > 0 && corners.is_null() {
+        return pnp_error_t::PNP_ERROR_NULL_POINTER;
+    }
+
+    let core_opts = if options.is_null() {
+        default_calibrate_options()
+    } else {
+        ffi_calibrate_options_to_core(&*options)
+    };
+
+    let mut corners_per_view: Vec<[core::Vector2; 4]> = Vec::with_capacity(num_views);
+    if num_views > 0 {
+        let flat = slice::from_raw_parts(corners, num_views * 4);
+        for v in 0..num_views {
+            let base = v * 4;
+            corners_per_view.push([
+                core::Vector2::new(flat[base].x, flat[base].y),
+                core::Vector2::new(flat[base + 1].x, flat[base + 1].y),
+                core::Vector2::new(flat[base + 2].x, flat[base + 2].y),
+                core::Vector2::new(flat[base + 3].x, flat[base + 3].y),
+            ]);
+        }
+    }
+
+    match pnp_core::calibrate_from_square_views(
+        &corners_per_view,
+        physical_size,
+        image_width,
+        image_height,
+        &core_opts,
+    ) {
+        Ok(result) => {
+            if let Err(e) = write_camera_to_ffi(&result.camera, out_camera) {
+                return e;
+            }
+            *out_rms = result.rms_reprojection_error;
+            let n = result.views_used;
+            if n > num_views {
+                return pnp_error_t::PNP_ERROR_MISMATCHED_COUNTS;
+            }
+            let rms_out = slice::from_raw_parts_mut(out_per_view_rms, num_views);
+            let poses_out = slice::from_raw_parts_mut(out_poses, num_views);
+            for i in 0..n {
+                rms_out[i] = result.per_view_rms[i];
+                poses_out[i] = core_pose_to_ffi(&result.object_poses[i]);
+            }
+            *out_views_used = n;
+            pnp_error_t::PNP_OK
+        }
+        Err(e) => core_error_to_ffi(e),
     }
 }
 
@@ -1119,5 +1303,217 @@ mod tests {
             result.error,
             pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS
         ));
+    }
+
+    /// Noise-free synthetic square corners matching core / Python fixtures.
+    fn synthetic_calibrate_corners() -> (Vec<pnp_vector2_t>, usize) {
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let cam_true = pnp_core::Camera::pinhole(fx_true, fy_true, cx_true, cy_true).unwrap();
+        let physical_size = 0.2;
+        let object = pnp_core::square_object_points(physical_size).unwrap();
+
+        let true_poses: [([f64; 3], [f64; 3]); 10] = [
+            ([0.15, -0.10, 0.05], [0.02, -0.01, 0.55]),
+            ([-0.20, 0.18, -0.08], [-0.03, 0.02, 0.62]),
+            ([0.10, 0.25, 0.12], [0.01, 0.0, 0.48]),
+            ([0.30, -0.05, -0.15], [-0.02, 0.03, 0.70]),
+            ([-0.12, -0.22, 0.08], [0.04, -0.02, 0.58]),
+            ([0.05, 0.12, -0.20], [0.0, 0.01, 0.52]),
+            ([0.28, 0.15, 0.10], [-0.01, 0.02, 0.60]),
+            ([-0.25, -0.15, -0.05], [0.03, -0.01, 0.65]),
+            ([0.18, -0.28, 0.15], [-0.02, 0.0, 0.50]),
+            ([-0.08, 0.30, -0.12], [0.01, 0.03, 0.57]),
+        ];
+
+        let mut corners = Vec::with_capacity(true_poses.len() * 4);
+        for (rvec, tvec) in &true_poses {
+            let r = pnp_core::rodrigues::rvec_to_rotation_matrix(rvec);
+            for p in &object {
+                // Xc = R X + t (column-major Matrix3x3).
+                let xc = pnp_core::Vector3::new(
+                    r.get(0, 0) * p.x + r.get(1, 0) * p.y + r.get(2, 0) * p.z + tvec[0],
+                    r.get(0, 1) * p.x + r.get(1, 1) * p.y + r.get(2, 1) * p.z + tvec[1],
+                    r.get(0, 2) * p.x + r.get(1, 2) * p.y + r.get(2, 2) * p.z + tvec[2],
+                );
+                let px = cam_true.project(xc).expect("in front of camera");
+                corners.push(pnp_vector2_t { x: px.x, y: px.y });
+            }
+        }
+        (corners, true_poses.len())
+    }
+
+    fn pinhole_calibrate_options() -> pnp_calibrate_options_t {
+        pnp_calibrate_options_t {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 0,
+            max_iterations: 100,
+            function_tolerance: 1e-12,
+            rms_success_threshold: -1.0,
+        }
+    }
+
+    #[test]
+    fn test_calibrate_from_square_views_noise_free() {
+        let (corners, num_views) = synthetic_calibrate_corners();
+        let opts = pinhole_calibrate_options();
+
+        let mut dist_buf = [0.0_f64; 8];
+        let mut out_camera = pnp_camera_t {
+            fx: 0.0,
+            fy: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            dist: dist_buf.as_mut_ptr(),
+            dist_len: dist_buf.len(),
+        };
+        let mut out_rms = f64::NAN;
+        let mut out_per_view_rms = vec![0.0_f64; num_views];
+        let mut out_poses: Vec<pnp_pose_t> = (0..num_views).map(|_| zero_pose()).collect();
+        let mut out_views_used = 0usize;
+
+        let err = unsafe {
+            peyote_pnp_calibrate_from_square_views(
+                corners.as_ptr(),
+                num_views,
+                0.2,
+                640,
+                480,
+                &opts,
+                &mut out_camera,
+                &mut out_rms,
+                out_per_view_rms.as_mut_ptr(),
+                out_poses.as_mut_ptr(),
+                &mut out_views_used,
+            )
+        };
+
+        assert!(matches!(err, pnp_error_t::PNP_OK));
+        assert_eq!(out_views_used, num_views);
+        assert!(out_rms < 1e-2, "RMS={out_rms}");
+        for (i, r) in out_per_view_rms.iter().enumerate() {
+            assert!(*r < 1e-2, "view {i} RMS={r}");
+        }
+        assert!(out_poses
+            .iter()
+            .all(|p| p.position.x.is_finite() && p.rotation.w.is_finite()));
+
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        assert!((out_camera.fx - fx_true).abs() / fx_true < 1e-3);
+        assert!((out_camera.fy - fy_true).abs() / fy_true < 1e-3);
+        assert!((out_camera.cx - 320.0).abs() < 0.5);
+        assert!((out_camera.cy - 240.0).abs() < 0.5);
+        assert!((out_camera.fx - out_camera.fy).abs() < 1e-9);
+        assert_eq!(out_camera.dist_len, 0);
+    }
+
+    #[test]
+    fn test_calibrate_from_square_views_null_pointer() {
+        let mut out_camera = pnp_camera_t {
+            fx: 0.0,
+            fy: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            dist: std::ptr::null(),
+            dist_len: 0,
+        };
+        let mut out_rms = 0.0;
+        let mut out_per_view_rms = [0.0_f64; 1];
+        let mut out_poses = [zero_pose()];
+        let mut out_views_used = 0usize;
+
+        let err = unsafe {
+            peyote_pnp_calibrate_from_square_views(
+                std::ptr::null(),
+                1,
+                0.2,
+                640,
+                480,
+                std::ptr::null(),
+                &mut out_camera,
+                &mut out_rms,
+                out_per_view_rms.as_mut_ptr(),
+                out_poses.as_mut_ptr(),
+                &mut out_views_used,
+            )
+        };
+        assert!(matches!(err, pnp_error_t::PNP_ERROR_NULL_POINTER));
+    }
+
+    #[test]
+    fn test_calibrate_from_square_views_rejects_bad_size() {
+        let mut out_camera = pnp_camera_t {
+            fx: 0.0,
+            fy: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            dist: std::ptr::null(),
+            dist_len: 0,
+        };
+        let mut out_rms = 0.0;
+        let mut out_per_view_rms = [0.0_f64; 1];
+        let mut out_poses = [zero_pose()];
+        let mut out_views_used = 0usize;
+        let opts = pinhole_calibrate_options();
+
+        let err = unsafe {
+            peyote_pnp_calibrate_from_square_views(
+                std::ptr::null(),
+                0,
+                0.0,
+                640,
+                480,
+                &opts,
+                &mut out_camera,
+                &mut out_rms,
+                out_per_view_rms.as_mut_ptr(),
+                out_poses.as_mut_ptr(),
+                &mut out_views_used,
+            )
+        };
+        assert!(matches!(err, pnp_error_t::PNP_ERROR_SOLVER_FAILED));
+    }
+
+    #[test]
+    fn test_calibrate_from_square_views_insufficient_views() {
+        let (corners, _) = synthetic_calibrate_corners();
+        // Only two views — below min_views=3.
+        let num_views = 2usize;
+        let opts = pinhole_calibrate_options();
+
+        let mut out_camera = pnp_camera_t {
+            fx: 0.0,
+            fy: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            dist: std::ptr::null(),
+            dist_len: 0,
+        };
+        let mut out_rms = 0.0;
+        let mut out_per_view_rms = vec![0.0_f64; num_views];
+        let mut out_poses: Vec<pnp_pose_t> = (0..num_views).map(|_| zero_pose()).collect();
+        let mut out_views_used = 0usize;
+
+        let err = unsafe {
+            peyote_pnp_calibrate_from_square_views(
+                corners.as_ptr(),
+                num_views,
+                0.2,
+                640,
+                480,
+                &opts,
+                &mut out_camera,
+                &mut out_rms,
+                out_per_view_rms.as_mut_ptr(),
+                out_poses.as_mut_ptr(),
+                &mut out_views_used,
+            )
+        };
+        assert!(matches!(err, pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS));
     }
 }
