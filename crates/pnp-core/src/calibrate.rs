@@ -1,19 +1,29 @@
 //! Multi-view monocular camera calibration: public types, validation, square
-//! planar object points, planar homography DLT, Zhang initial intrinsics, and
-//! BA parameter packing / RMS helpers.
+//! planar object points, planar homography DLT, Zhang initial intrinsics,
+//! BA parameter packing / RMS, and joint Levenberg–Marquardt refinement.
 //!
-//! Joint Levenberg–Marquardt refinement lands in later tasks. This module
-//! exposes configuration / result types, input checks, private init helpers
-//! (homography DLT + Zhang closed-form `K`), and state packing that maps free
-//! intrinsics, distortion coefficients, and per-view OpenCV rvec/tvec into a
-//! flat parameter vector for BA.
+//! This module exposes configuration / result types, input checks, private
+//! init helpers (homography DLT + Zhang closed-form `K`), state packing that
+//! maps free intrinsics, distortion coefficients, and per-view OpenCV
+//! rvec/tvec into a flat parameter vector, and pinhole-first joint LM refine.
+//!
+//! # Joint LM (v1)
+//!
+//! [`refine_calibration_lm`] optimizes free calibration parameters with
+//! Levenberg–Marquardt damping matching `multiview_solve` / `iterative`
+//! (`lambda` on `diag(JᵀJ)`, accept/reject steps, cost-delta tolerance).
+//!
+//! The Jacobian is **finite differences** on free parameters (central
+//! difference, step `1e-6`). Analytic Jacobians can replace this later
+//! without changing the state layout.
 
 use crate::camera::Camera;
+use crate::pose_tools;
 use crate::rodrigues;
 use crate::types::{rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Vector2, Vector3};
 use alloc::vec;
 use alloc::vec::Vec;
-use nalgebra::{DMatrix, Matrix3, Vector3 as NaVector3};
+use nalgebra::{DMatrix, DVector, Matrix3, Vector3 as NaVector3};
 
 /// Options controlling multi-view intrinsic + distortion calibration.
 ///
@@ -619,7 +629,8 @@ impl CalibLayout {
     ///
     /// `fixed_cx` / `fixed_cy` are only applied when
     /// `options.fix_principal_point` (typically image center or seed `K`).
-    #[allow(dead_code)] // used by pack/unpack tests and later LM
+    // Wired by refine / public calibrate (tests exercise now).
+    #[allow(dead_code)]
     fn new(options: &CalibrateOptions, n_views: usize, fixed_cx: f64, fixed_cy: f64) -> Self {
         Self {
             fix_aspect_ratio: options.fix_aspect_ratio,
@@ -673,7 +684,7 @@ fn free_dist_from_camera(camera: &Camera, dist_len: usize) -> Vec<f64> {
 ///
 /// Returns [`PnpError::SolverFailed`] if `dist_len` is unsupported, `dist_free`
 /// length mismatches `dist_len`, or [`Camera::new`] rejects the values.
-// Used by unpack_state and later LM; unit-tested now.
+// Wired by refine / public calibrate (tests exercise now).
 #[allow(dead_code)]
 fn camera_from_params(
     fx: f64,
@@ -710,7 +721,7 @@ fn camera_from_params(
 /// Length must equal `layout.n_views`. When aspect is fixed, only `camera.fx`
 /// is packed (`fy` is forced to `fx` on unpack). When the principal point is
 /// fixed, `cx`/`cy` are not packed (see [`CalibLayout::fixed_cx`]).
-// Used by later LM; unit-tested now.
+// Wired by refine / public calibrate (tests exercise now).
 #[allow(dead_code)]
 fn pack_state(layout: &CalibLayout, camera: &Camera, poses_cv: &[CvRvecTvec]) -> Vec<f64> {
     debug_assert_eq!(poses_cv.len(), layout.n_views);
@@ -746,7 +757,7 @@ fn pack_state(layout: &CalibLayout, camera: &Camera, poses_cv: &[CvRvecTvec]) ->
 ///
 /// Returns [`PnpError::SolverFailed`] if `params.len()` does not match the
 /// layout, or if [`camera_from_params`] rejects the values.
-// Used by later LM; unit-tested now.
+// Wired by refine / public calibrate (tests exercise now).
 #[allow(dead_code)]
 fn unpack_state(
     params: &[f64],
@@ -795,7 +806,7 @@ fn unpack_state(
 }
 
 /// Convert an OpenCV [`Pose`] to Rodrigues `rvec` + `tvec`.
-#[allow(dead_code)] // seed packing from solve_pnp (later tasks)
+#[allow(dead_code)] // seed packing from solve_pnp (later public pipeline)
 fn pose_cv_to_rvec_tvec(pose: &Pose) -> CvRvecTvec {
     let r_mat = pose.rotation.normalize().to_na_unit().to_rotation_matrix();
     let m = Matrix3x3::from_na(r_mat.matrix());
@@ -805,7 +816,8 @@ fn pose_cv_to_rvec_tvec(pose: &Pose) -> CvRvecTvec {
 }
 
 /// Convert Rodrigues `rvec` + `tvec` to an OpenCV [`Pose`].
-#[allow(dead_code)] // result conversion after BA (later tasks)
+// Wired by refine / public calibrate (tests exercise now).
+#[allow(dead_code)]
 fn rvec_tvec_to_pose_cv(rvec: &[f64; 3], tvec: &NaVector3<f64>) -> Pose {
     let rot_m = rodrigues::rvec_to_rotation_matrix(rvec);
     let q = rotation_matrix_to_quaternion(&rot_m);
@@ -828,7 +840,7 @@ fn rvec_tvec_to_pose_cv(rvec: &[f64; 3], tvec: &NaVector3<f64>) -> Pose {
 ///
 /// `poses_cv` and `views` must have the same length; each view's image list
 /// should match `object_points` length (callers validate inputs earlier).
-// Used by later refine / public calibrate; unit-tested now.
+// Wired by refine / public calibrate (tests exercise now).
 #[allow(dead_code)]
 fn rms_reprojection(
     object_points: &[Vector3],
@@ -882,6 +894,282 @@ fn rms_reprojection(
         0.0
     };
     (overall, per_view)
+}
+
+// ---------------------------------------------------------------------------
+// Joint Levenberg–Marquardt refinement
+// ---------------------------------------------------------------------------
+// Private until Task 6 public calibrate_camera pipeline; unit-tested here.
+#[allow(dead_code)]
+const LM_LAMBDA0: f64 = 1e-3;
+#[allow(dead_code)]
+const LM_LAMBDA_FACTOR: f64 = 10.0;
+#[allow(dead_code)]
+const LM_PARAM_CONV: f64 = 1e-8;
+#[allow(dead_code)]
+const LM_FD_EPS: f64 = 1e-6;
+/// Residual magnitude when a point fails to project (behind camera).
+#[allow(dead_code)]
+const LM_BAD_RESIDUAL: f64 = 1e6;
+
+/// Stacked reprojection residuals: length `2 * n_views * n_points`.
+///
+/// Order is view-major, then point-major, then `(dx, dy)` per point — same
+/// residual definition as [`rms_reprojection`].
+#[allow(dead_code)]
+fn calib_residuals(
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+    camera: &Camera,
+    poses_cv: &[CvRvecTvec],
+) -> DVector<f64> {
+    let n_views = views.len().min(poses_cv.len());
+    let n_pts = object_points.len();
+    let mut residuals = DVector::zeros(2 * n_views * n_pts);
+    let mut row = 0usize;
+
+    for v in 0..n_views {
+        let (rvec, tvec) = &poses_cv[v];
+        let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+        let img = &views[v].image_points;
+        let n = n_pts.min(img.len());
+
+        for j in 0..n_pts {
+            if j < n {
+                let pw = object_points[j].to_na();
+                let pc = r * pw + tvec;
+                let x_cam = Vector3::from_na(&pc);
+                match camera.project(x_cam) {
+                    Some(proj) => {
+                        residuals[row] = proj.x - img[j].x;
+                        residuals[row + 1] = proj.y - img[j].y;
+                    }
+                    None => {
+                        residuals[row] = LM_BAD_RESIDUAL;
+                        residuals[row + 1] = LM_BAD_RESIDUAL;
+                    }
+                }
+            } else {
+                residuals[row] = LM_BAD_RESIDUAL;
+                residuals[row + 1] = LM_BAD_RESIDUAL;
+            }
+            row += 2;
+        }
+    }
+
+    residuals
+}
+
+#[allow(dead_code)]
+fn residual_cost(residuals: &DVector<f64>) -> f64 {
+    residuals.iter().map(|r| r * r).sum()
+}
+
+/// Residuals for a packed state vector (large residual vector if unpack fails).
+#[allow(dead_code)]
+fn residuals_from_params(
+    params: &[f64],
+    layout: &CalibLayout,
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+) -> DVector<f64> {
+    let n = 2 * layout.n_views * object_points.len();
+    match unpack_state(params, layout) {
+        Ok((camera, poses)) => calib_residuals(object_points, views, &camera, &poses),
+        Err(_) => DVector::from_element(n, LM_BAD_RESIDUAL),
+    }
+}
+
+/// Central finite-difference Jacobian of residuals w.r.t. free packed params.
+#[allow(dead_code)]
+fn calib_jacobian_fd(
+    params: &[f64],
+    layout: &CalibLayout,
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+) -> DMatrix<f64> {
+    let n_res = 2 * layout.n_views * object_points.len();
+    let n_par = params.len();
+    let mut jac = DMatrix::zeros(n_res, n_par);
+
+    for k in 0..n_par {
+        let mut plus = params.to_vec();
+        let mut minus = params.to_vec();
+        plus[k] += LM_FD_EPS;
+        minus[k] -= LM_FD_EPS;
+
+        let res_p = residuals_from_params(&plus, layout, object_points, views);
+        let res_m = residuals_from_params(&minus, layout, object_points, views);
+
+        let denom = 2.0 * LM_FD_EPS;
+        for i in 0..n_res {
+            jac[(i, k)] = (res_p[i] - res_m[i]) / denom;
+        }
+    }
+
+    jac
+}
+
+/// Joint LM refine of intrinsics (+ free distortion) and per-view OpenCV poses.
+///
+/// State layout is [`CalibLayout`] / [`pack_state`]. Jacobian uses finite
+/// differences (see module docs). Pose seed `poses_cv0` is OpenCV
+/// object-in-camera `(rvec, tvec)`. Returned poses are **OpenGL** (same
+/// convention as [`crate::solve_pnp`]).
+///
+/// When `options.fix_principal_point`, `cx`/`cy` are locked to image center
+/// (`image_width/2`, `image_height/2`).
+///
+/// # Errors
+///
+/// - View / pose count mismatch, empty views, or non-finite seed →
+///   [`PnpError::SolverFailed`]
+/// - Non-finite refined parameters → [`PnpError::SolverFailed`]
+/// - `options.rms_success_threshold` exceeded after refine →
+///   [`PnpError::SolverFailed`]
+// Private until Task 6 public calibrate_camera pipeline; unit-tested here.
+#[allow(dead_code)]
+fn refine_calibration_lm(
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+    image_width: u32,
+    image_height: u32,
+    options: &CalibrateOptions,
+    camera0: Camera,
+    poses_cv0: Vec<CvRvecTvec>,
+) -> Result<(Camera, Vec<Pose>, f64, Vec<f64>), PnpError> {
+    if views.is_empty() || views.len() != poses_cv0.len() {
+        return Err(PnpError::SolverFailed);
+    }
+    if object_points.is_empty() {
+        return Err(PnpError::SolverFailed);
+    }
+    if !matches!(options.dist_len, 0 | 2 | 4 | 5 | 8) {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let fixed_cx = image_width as f64 * 0.5;
+    let fixed_cy = image_height as f64 * 0.5;
+    let layout = CalibLayout::new(options, views.len(), fixed_cx, fixed_cy);
+
+    // Apply fixed flags on the seed camera so pack/unpack stay consistent.
+    let mut seed_cam = camera0;
+    if options.fix_aspect_ratio {
+        seed_cam.fy = seed_cam.fx;
+    }
+    if options.fix_principal_point {
+        seed_cam.cx = fixed_cx;
+        seed_cam.cy = fixed_cy;
+    }
+
+    let mut params = pack_state(&layout, &seed_cam, &poses_cv0);
+    if !params.iter().all(|p| p.is_finite()) {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let mut lambda = LM_LAMBDA0;
+    let mut prev_cost = residual_cost(&residuals_from_params(
+        &params,
+        &layout,
+        object_points,
+        views,
+    ));
+    if !prev_cost.is_finite() {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let n_par = params.len();
+    let max_iters = options.max_iterations.max(1);
+    let ftol = options.function_tolerance;
+
+    for _ in 0..max_iters {
+        let residuals = residuals_from_params(&params, &layout, object_points, views);
+        let jacobian = calib_jacobian_fd(&params, &layout, object_points, views);
+
+        let jtj = jacobian.transpose() * &jacobian;
+        let jtr = jacobian.transpose() * &residuals;
+
+        let mut a = jtj.clone();
+        for i in 0..n_par {
+            a[(i, i)] += lambda * jtj[(i, i)].max(1e-10);
+        }
+
+        let neg_jtr = -&jtr;
+        let delta = match a.lu().solve(&neg_jtr) {
+            Some(d) => d,
+            None => break,
+        };
+
+        if delta.norm() < LM_PARAM_CONV {
+            break;
+        }
+
+        let mut trial = params.clone();
+        for i in 0..n_par {
+            trial[i] += delta[i];
+        }
+
+        let new_cost = residual_cost(&residuals_from_params(
+            &trial,
+            &layout,
+            object_points,
+            views,
+        ));
+
+        if new_cost.is_finite() && new_cost < prev_cost {
+            params = trial;
+            lambda = (lambda / LM_LAMBDA_FACTOR).max(1e-10);
+            let rel = (prev_cost - new_cost) / prev_cost.max(1e-15);
+            if rel < ftol {
+                break;
+            }
+            prev_cost = new_cost;
+        } else {
+            lambda *= LM_LAMBDA_FACTOR;
+            if lambda > 1e16 {
+                break;
+            }
+        }
+    }
+
+    let (camera, poses_cv) = unpack_state(&params, &layout)?;
+    if !camera.fx.is_finite()
+        || !camera.fy.is_finite()
+        || !camera.cx.is_finite()
+        || !camera.cy.is_finite()
+        || camera.dist.iter().any(|d| !d.is_finite())
+    {
+        return Err(PnpError::SolverFailed);
+    }
+    for (rvec, tvec) in &poses_cv {
+        if !rvec.iter().all(|v| v.is_finite())
+            || !tvec.x.is_finite()
+            || !tvec.y.is_finite()
+            || !tvec.z.is_finite()
+        {
+            return Err(PnpError::SolverFailed);
+        }
+    }
+
+    let (overall_rms, per_view_rms) = rms_reprojection(object_points, views, &camera, &poses_cv);
+    if !overall_rms.is_finite() {
+        return Err(PnpError::SolverFailed);
+    }
+    if let Some(t) = options.rms_success_threshold {
+        if overall_rms > t {
+            return Err(PnpError::SolverFailed);
+        }
+    }
+
+    let object_poses: Vec<Pose> = poses_cv
+        .iter()
+        .map(|(rvec, tvec)| {
+            let cv = rvec_tvec_to_pose_cv(rvec, tvec);
+            pose_tools::from_opencv_to_opengl(&cv)
+        })
+        .collect();
+
+    Ok((camera, object_poses, overall_rms, per_view_rms))
 }
 
 #[cfg(test)]
@@ -1487,5 +1775,121 @@ mod tests {
         let m2 = rodrigues::rvec_to_rotation_matrix(&r2).to_na();
         assert!((m1 - m2).norm() < 1e-10);
         assert!((t2 - tvec).norm() < 1e-12);
+    }
+
+    /// Build a planar 3×3 grid on Z=0 (meters), centered on origin.
+    fn planar_grid_3x3(half: f64) -> Vec<Vector3> {
+        let mut pts = Vec::with_capacity(9);
+        for iy in 0..3 {
+            for ix in 0..3 {
+                let x = -half + ix as f64 * half;
+                let y = half - iy as f64 * half;
+                pts.push(Vector3::new(x, y, 0.0));
+            }
+        }
+        pts
+    }
+
+    #[test]
+    fn refine_pinhole_from_noisy_init() {
+        // True pinhole camera (noise-free synthetic).
+        let fx_true = 800.0;
+        let fy_true = 820.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let cam_true = Camera::pinhole(fx_true, fy_true, cx_true, cy_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let object = planar_grid_3x3(0.1);
+
+        // Varied tilts / distances (OpenCV object-in-camera).
+        let true_poses: [CvRvecTvec; 6] = [
+            ([0.15, -0.10, 0.05], NaVector3::new(0.02, -0.01, 0.55)),
+            ([-0.20, 0.18, -0.08], NaVector3::new(-0.03, 0.02, 0.62)),
+            ([0.10, 0.25, 0.12], NaVector3::new(0.01, 0.0, 0.48)),
+            ([0.30, -0.05, -0.15], NaVector3::new(-0.02, 0.03, 0.70)),
+            ([-0.12, -0.22, 0.08], NaVector3::new(0.04, -0.02, 0.58)),
+            ([0.05, 0.12, -0.20], NaVector3::new(0.0, 0.01, 0.52)),
+        ];
+
+        let mut views = Vec::with_capacity(true_poses.len());
+        for (rvec, tvec) in &true_poses {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut image_points = Vec::with_capacity(object.len());
+            for p in &object {
+                let pc = r * p.to_na() + tvec;
+                let uv = cam_true
+                    .project(Vector3::from_na(&pc))
+                    .expect("in front of camera");
+                image_points.push(uv);
+            }
+            views.push(CalibrationView { image_points });
+        }
+
+        // K off by ~5%; poses slightly perturbed.
+        let cam0 =
+            Camera::pinhole(fx_true * 1.05, fy_true * 0.95, cx_true + 5.0, cy_true - 4.0).unwrap();
+        let poses0: Vec<CvRvecTvec> = true_poses
+            .iter()
+            .map(|(r, t)| {
+                (
+                    [r[0] + 0.02, r[1] - 0.015, r[2] + 0.01],
+                    NaVector3::new(t.x + 0.005, t.y - 0.004, t.z * 1.03),
+                )
+            })
+            .collect();
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: false,
+            fix_principal_point: false,
+            dist_len: 0,
+            max_iterations: 100,
+            function_tolerance: 1e-12,
+            rms_success_threshold: None,
+        };
+
+        let (cam_est, poses_gl, rms, per_view) = refine_calibration_lm(
+            &object,
+            &views,
+            image_width,
+            image_height,
+            &opts,
+            cam0,
+            poses0,
+        )
+        .expect("LM refine should succeed");
+
+        assert!(rms < 1e-2, "overall RMS={rms}");
+        assert_eq!(per_view.len(), true_poses.len());
+        for (i, r) in per_view.iter().enumerate() {
+            assert!(*r < 1e-2, "view {i} RMS={r}");
+        }
+
+        let fx_rel = (cam_est.fx - fx_true).abs() / fx_true;
+        let fy_rel = (cam_est.fy - fy_true).abs() / fy_true;
+        assert!(
+            fx_rel < 1e-3,
+            "fx rel err={fx_rel} (est={}, true={fx_true})",
+            cam_est.fx
+        );
+        assert!(
+            fy_rel < 1e-3,
+            "fy rel err={fy_rel} (est={}, true={fy_true})",
+            cam_est.fy
+        );
+        assert!(
+            (cam_est.cx - cx_true).abs() < 0.5,
+            "cx err={}",
+            (cam_est.cx - cx_true).abs()
+        );
+        assert!(
+            (cam_est.cy - cy_true).abs() < 0.5,
+            "cy err={}",
+            (cam_est.cy - cy_true).abs()
+        );
+        assert!(cam_est.dist.is_empty());
+        assert_eq!(poses_gl.len(), true_poses.len());
     }
 }
