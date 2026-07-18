@@ -271,3 +271,76 @@ fn multiview_n2_matches_stereo_api() {
     }
 }
 
+fn make_n3_rig() -> MultiViewRig {
+    let cam = Camera::pinhole(800.0, 800.0, 320.0, 240.0).unwrap();
+    MultiViewRig::new(vec![
+        CameraView {
+            camera: cam.clone(),
+            from_primary: Pose::identity(),
+        },
+        // View 1: +0.1 m along X relative to primary.
+        CameraView {
+            camera: cam.clone(),
+            from_primary: Pose::new(Vector3::new(0.1, 0.0, 0.0), Quaternion::identity()),
+        },
+        // View 2: +0.05 m along Y relative to primary.
+        CameraView {
+            camera: cam,
+            from_primary: Pose::new(Vector3::new(0.0, 0.05, 0.0), Quaternion::identity()),
+        },
+    ])
+    .unwrap()
+}
+
+/// N=3 multiview recovers known OpenCV object pose within 1e-3 pos / 1e-3 rad.
+#[test]
+fn multiview_n3_recovers_known_pose() {
+    let landmarks = square_landmarks();
+    let rig = make_n3_rig();
+    let cv_true = cv_pose_from_rvec_tvec([0.05, -0.15, 0.08], [0.02, -0.01, 1.5]);
+    let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
+    let obs = project_multiview(&landmarks, &rig, &cv_true);
+
+    for method in [
+        SolvePnpMethod::Iterative,
+        SolvePnpMethod::EPnP,
+        SolvePnpMethod::SQPnP,
+    ] {
+        let pose = solve_pnp_multiview(&landmarks, &obs, &rig, method).expect("multiview n3");
+        let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
+        assert!(
+            pos_err < 1e-3,
+            "{:?}: position error {} exceeds 1e-3",
+            method,
+            pos_err
+        );
+        assert!(
+            rot_err < 1e-3,
+            "{:?}: rotation error {} rad exceeds 1e-3",
+            method,
+            rot_err
+        );
+    }
+}
+
+/// Landmark missing from middle view still contributes residual from other views.
+#[test]
+fn multiview_partial_observations() {
+    // Landmark visible only in views 0 and 2 (pixels[1] = None) still recovers.
+    let landmarks = square_landmarks();
+    let rig = make_n3_rig();
+    let cv_true = cv_pose_from_rvec_tvec([-0.1, 0.05, 0.02], [0.01, 0.02, 1.8]);
+    let gl_true = pose_tools::from_opencv_to_opengl(&cv_true);
+    let mut obs = project_multiview(&landmarks, &rig, &cv_true);
+    // Drop view 1 for all landmarks — residual uses views 0 and 2 only.
+    for o in &mut obs {
+        o.pixels[1] = None;
+    }
+
+    let pose = solve_pnp_multiview(&landmarks, &obs, &rig, SolvePnpMethod::Iterative)
+        .expect("partial views");
+    let (pos_err, rot_err) = pose_errors(&pose, &gl_true);
+    assert!(pos_err < 1e-3, "partial obs pos err {}", pos_err);
+    assert!(rot_err < 1e-3, "partial obs rot err {}", rot_err);
+}
+
