@@ -56,7 +56,7 @@ public enum PnpNative {
   public static func solveCameraPose(
     landmarks: [Landmark],
     observations: [LandmarkObservation],
-    cameraMatrix: Matrix3x3,
+    camera: Camera,
     method: Method
   ) throws -> Pose {
     if landmarks.isEmpty || observations.isEmpty {
@@ -76,19 +76,20 @@ public enum PnpNative {
     let nativeObservations = try observations.map { item in
       try makeNativeObservation(item, allocatedStrings: &allocatedStrings)
     }
-    var nativeCameraMatrix = makeNativeMatrix(cameraMatrix)
     let nativeMethod = makeNativeMethod(method)
 
-    let result = nativeLandmarks.withUnsafeBufferPointer { landmarkBuffer in
-      nativeObservations.withUnsafeBufferPointer { observationBuffer in
-        peyote_pnp_solve_camera_pose(
-          landmarkBuffer.baseAddress,
-          UInt(landmarkBuffer.count),
-          observationBuffer.baseAddress,
-          UInt(observationBuffer.count),
-          &nativeCameraMatrix,
-          nativeMethod
-        )
+    let result = try withNativeCamera(camera) { nativeCamera in
+      nativeLandmarks.withUnsafeBufferPointer { landmarkBuffer in
+        nativeObservations.withUnsafeBufferPointer { observationBuffer in
+          peyote_pnp_solve_camera_pose(
+            landmarkBuffer.baseAddress,
+            UInt(landmarkBuffer.count),
+            observationBuffer.baseAddress,
+            UInt(observationBuffer.count),
+            nativeCamera,
+            nativeMethod
+          )
+        }
       }
     }
 
@@ -177,14 +178,32 @@ public enum PnpNative {
     }
   }
 
-  public struct Matrix3x3: Equatable {
-    public let m: [Double]
+  public struct Camera: Equatable {
+    public let fx: Double
+    public let fy: Double
+    public let cx: Double
+    public let cy: Double
+    /// OpenCV-ordered distortion coeffs (empty = pinhole).
+    public let dist: [Double]
 
-    public init(m: [Double]) throws {
-      guard m.count == 9 else {
-        throw PnpError.invalidInput("cameraMatrix.m must contain exactly 9 numbers")
+    public init(fx: Double, fy: Double, cx: Double, cy: Double, dist: [Double] = []) throws {
+      guard fx.isFinite, fy.isFinite, cx.isFinite, cy.isFinite else {
+        throw PnpError.invalidInput("camera intrinsics must be finite")
       }
-      self.m = m
+      guard abs(fx) > 1e-12, abs(fy) > 1e-12 else {
+        throw PnpError.invalidInput("camera focal lengths must be non-zero")
+      }
+      guard dist.allSatisfy({ $0.isFinite }) else {
+        throw PnpError.invalidInput("distortion coefficients must be finite")
+      }
+      guard dist.isEmpty || dist.count == 4 || dist.count == 5 || dist.count == 8 else {
+        throw PnpError.invalidInput("dist must have 0, 4, 5, or 8 coefficients")
+      }
+      self.fx = fx
+      self.fy = fy
+      self.cx = cx
+      self.cy = cy
+      self.dist = dist
     }
   }
 
@@ -249,18 +268,33 @@ public enum PnpNative {
     return UnsafePointer(duplicated)
   }
 
-  private static func makeNativeMatrix(_ value: Matrix3x3) -> pnp_matrix3x3_t {
-    pnp_matrix3x3_t(m: (
-      value.m[0],
-      value.m[1],
-      value.m[2],
-      value.m[3],
-      value.m[4],
-      value.m[5],
-      value.m[6],
-      value.m[7],
-      value.m[8]
-    ))
+  private static func withNativeCamera<T>(
+    _ value: Camera,
+    _ body: (UnsafePointer<pnp_camera_t>) throws -> T
+  ) rethrows -> T {
+    if value.dist.isEmpty {
+      var native = pnp_camera_t(
+        fx: value.fx,
+        fy: value.fy,
+        cx: value.cx,
+        cy: value.cy,
+        dist: nil,
+        dist_len: 0
+      )
+      return try body(&native)
+    }
+
+    return try value.dist.withUnsafeBufferPointer { buffer in
+      var native = pnp_camera_t(
+        fx: value.fx,
+        fy: value.fy,
+        cx: value.cx,
+        cy: value.cy,
+        dist: buffer.baseAddress,
+        dist_len: UInt(buffer.count)
+      )
+      return try body(&native)
+    }
   }
 
   private static func makeNativeVector3(_ value: Vector3) -> pnp_vector3_t {

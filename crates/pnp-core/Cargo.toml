@@ -3,7 +3,11 @@ name = "pnp-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure Rust PnP (Perspective-n-Point) pose estimation"
+repository.workspace = true
+description = "Pure Rust Perspective-n-Point (PnP) pose estimation with optional distortion"
+readme = "../../README.md"
+keywords = ["pnp", "pose", "computer-vision", "ar", "calibration"]
+categories = ["algorithms", "computer-vision", "no-std", "science"]
 
 [features]
 default = ["std"]

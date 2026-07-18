@@ -36,7 +36,19 @@ def _observations(set_index: int) -> np.ndarray:
     return np.asarray(REFERENCE["observation_sets"][set_index], dtype=np.float64)
 
 
+def _camera() -> dict[str, float | list[float]]:
+    k = REFERENCE["camera_matrix"]
+    return {
+        "fx": k[0][0],
+        "fy": k[1][1],
+        "cx": k[0][2],
+        "cy": k[1][2],
+        "dist": [],
+    }
+
+
 def _camera_matrix() -> np.ndarray:
+    """Pinhole OpenCV K matrix (accepted as a convenience camera form)."""
     return np.asarray(REFERENCE["camera_matrix"], dtype=np.float64)
 
 
@@ -58,7 +70,7 @@ def test_solve_pnp_matches_reference_iterative_set0() -> None:
     pose = auki_pnpkit.solve_pnp(
         _landmarks(),
         _observations(0),
-        _camera_matrix(),
+        _camera(),
         method="iterative",
     )
 
@@ -71,7 +83,7 @@ def test_solve_pnp_camera_pose_matches_reference() -> None:
     camera_pose = auki_pnpkit.solve_pnp_camera_pose(
         _landmarks(),
         _observations(0),
-        _camera_matrix(),
+        _camera(),
         method="iterative",
     )
 
@@ -81,7 +93,7 @@ def test_solve_pnp_camera_pose_matches_reference() -> None:
     )
 
 
-def test_dict_landmarks_and_camera_matrix_m() -> None:
+def test_dict_landmarks_and_camera_forms() -> None:
     landmarks = [
         {"id": str(i), "position": {"x": p[0], "y": p[1], "z": p[2]}}
         for i, p in enumerate(REFERENCE["landmarks"])
@@ -90,14 +102,31 @@ def test_dict_landmarks_and_camera_matrix_m() -> None:
         {"id": str(i), "position": {"x": p[0], "y": p[1]}}
         for i, p in enumerate(REFERENCE["observation_sets"][0])
     ]
-    # Column-major storage matching Matrix3x3::camera_matrix(fx, fy, cx, cy).
-    camera = {
-        "m": [815.8511, 0.0, 0.0, 0.0, 815.8511, 0.0, 960.0, 540.0, 1.0]
-    }
-
-    pose = auki_pnpkit.solve_pnp(landmarks, observations, camera, method="iterative")
     ref = _reference_result(0, "iterative")
-    assert _position_error(pose["position"], ref["gl_position"]) < 1e-3
+
+    for camera in (
+        _camera(),
+        _camera_matrix(),
+        {"m": [815.8511, 0.0, 0.0, 0.0, 815.8511, 0.0, 960.0, 540.0, 1.0]},
+    ):
+        pose = auki_pnpkit.solve_pnp(landmarks, observations, camera, method="iterative")
+        assert _position_error(pose["position"], ref["gl_position"]) < 1e-3
+
+
+def test_solve_pnp_with_distortion_coeffs() -> None:
+    # Mild distortion should still solve after internal undistort.
+    camera = {
+        **_camera(),
+        "dist": [0.05, -0.02, 0.0, 0.0, 0.0],
+    }
+    pose = auki_pnpkit.solve_pnp(
+        _landmarks(),
+        _observations(0),
+        camera,
+        method="iterative",
+    )
+    assert math.isfinite(pose["position"]["x"])
+    assert math.isfinite(pose["rotation"]["w"])
 
 
 def test_camera_pose_from_solve_pnp_pose_inverts_translation() -> None:
@@ -159,14 +188,14 @@ def test_invalid_inputs_raise_python_exceptions() -> None:
         auki_pnpkit.solve_pnp(
             _landmarks(),
             _observations(0),
-            _camera_matrix(),
+            _camera(),
             method="unknown",
         )
     with pytest.raises(ValueError, match="insufficient points"):
         auki_pnpkit.solve_pnp(
             _landmarks()[:2],
             _observations(0)[:2],
-            _camera_matrix(),
+            _camera(),
             method="iterative",
         )
     with pytest.raises(ValueError, match="physical_size"):

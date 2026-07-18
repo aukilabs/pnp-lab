@@ -8,8 +8,8 @@ class PnpModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("Pnp")
 
-    AsyncFunction("solvePnpCameraPose") { landmarks: List<Map<String, Any?>>, observations: List<Map<String, Any?>>, cameraMatrix: Map<String, Any?>, method: String ->
-      solvePnpCameraPose(landmarks, observations, cameraMatrix, method)
+    AsyncFunction("solvePnpCameraPose") { landmarks: List<Map<String, Any?>>, observations: List<Map<String, Any?>>, camera: Map<String, Any?>, method: String ->
+      solvePnpCameraPose(landmarks, observations, camera, method)
     }
 
     AsyncFunction("estimateSquarePoseFromRays") { rays: List<Map<String, Any?>>, physicalSize: Double ->
@@ -20,7 +20,7 @@ class PnpModule : Module() {
   private fun solvePnpCameraPose(
     @Suppress("UNUSED_PARAMETER") landmarks: List<Map<String, Any?>>,
     @Suppress("UNUSED_PARAMETER") observations: List<Map<String, Any?>>,
-    @Suppress("UNUSED_PARAMETER") cameraMatrix: Map<String, Any?>,
+    @Suppress("UNUSED_PARAMETER") camera: Map<String, Any?>,
     @Suppress("UNUSED_PARAMETER") method: String,
   ): Map<String, Any> {
     throw CodedException("solvePnpCameraPose is not implemented yet.")

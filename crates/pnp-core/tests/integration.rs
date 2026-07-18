@@ -54,9 +54,9 @@ fn make_observations(ref_data: &ReferenceData, set_idx: usize) -> Vec<LandmarkOb
         .collect()
 }
 
-fn make_camera_matrix(ref_data: &ReferenceData) -> Matrix3x3 {
+fn make_camera(ref_data: &ReferenceData) -> pnp_core::Camera {
     let k = &ref_data.camera_matrix;
-    Matrix3x3::camera_matrix(k[0][0], k[1][1], k[0][2], k[1][2])
+    pnp_core::Camera::pinhole(k[0][0], k[1][1], k[0][2], k[1][2]).unwrap()
 }
 
 fn to_method(name: &str) -> Option<SolvePnpMethod> {
@@ -91,7 +91,7 @@ fn test_iterative_set0_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 0);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::Iterative).unwrap();
 
@@ -129,7 +129,7 @@ fn test_iterative_set1_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 1);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::Iterative).unwrap();
 
@@ -167,7 +167,7 @@ fn test_iterative_set2_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 2);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::Iterative).unwrap();
 
@@ -205,7 +205,7 @@ fn test_sqpnp_set0_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 0);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::SQPnP).unwrap();
 
@@ -239,7 +239,7 @@ fn test_sqpnp_set1_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 1);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::SQPnP).unwrap();
 
@@ -273,7 +273,7 @@ fn test_sqpnp_set2_gl_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 2);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let pose = pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::SQPnP).unwrap();
 
@@ -309,7 +309,7 @@ fn test_iterative_set0_camera_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 0);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let cam_pose =
         pnp_core::solve_pnp_camera_pose(&landmarks, &obs, &cam, SolvePnpMethod::Iterative).unwrap();
@@ -352,7 +352,7 @@ fn test_sqpnp_set0_camera_pose() {
 
     let landmarks = make_landmarks(&ref_data);
     let obs = make_observations(&ref_data, 0);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     let cam_pose =
         pnp_core::solve_pnp_camera_pose(&landmarks, &obs, &cam, SolvePnpMethod::SQPnP).unwrap();
@@ -390,7 +390,7 @@ fn test_sqpnp_set0_camera_pose() {
 fn test_camera_pose_equals_inverted_solve_pnp() {
     let ref_data = load_reference();
     let landmarks = make_landmarks(&ref_data);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     for set_idx in 0..3 {
         let obs = make_observations(&ref_data, set_idx);
@@ -443,7 +443,7 @@ fn test_opencv_opengl_roundtrip() {
 fn test_all_methods_succeed_all_sets() {
     let ref_data = load_reference();
     let landmarks = make_landmarks(&ref_data);
-    let cam = make_camera_matrix(&ref_data);
+    let cam = make_camera(&ref_data);
 
     for set_idx in 0..3 {
         let obs = make_observations(&ref_data, set_idx);
@@ -470,9 +470,7 @@ fn test_all_methods_succeed_all_sets() {
 fn test_iterative_reprojection_error_all_sets() {
     let ref_data = load_reference();
     let landmarks = make_landmarks(&ref_data);
-    let cam = make_camera_matrix(&ref_data);
-    let na_cam =
-        pnp_core::types::Matrix3x3::camera_matrix(815.8511, 815.8511, 960.0, 540.0).to_na();
+    let na_cam = make_camera(&ref_data).matrix_na();
 
     for set_idx in 0..3 {
         let obs = make_observations(&ref_data, set_idx);
@@ -511,9 +509,7 @@ fn test_iterative_reprojection_error_all_sets() {
 fn test_sqpnp_reprojection_error_all_sets() {
     let ref_data = load_reference();
     let landmarks = make_landmarks(&ref_data);
-    let cam = make_camera_matrix(&ref_data);
-    let na_cam =
-        pnp_core::types::Matrix3x3::camera_matrix(815.8511, 815.8511, 960.0, 540.0).to_na();
+    let na_cam = make_camera(&ref_data).matrix_na();
 
     for set_idx in 0..3 {
         let obs = make_observations(&ref_data, set_idx);
@@ -565,7 +561,7 @@ fn test_insufficient_points_errors() {
             position: Vector2::new(1.0, 0.0),
         },
     ];
-    let cam = Matrix3x3::camera_matrix(815.8511, 815.8511, 960.0, 540.0);
+    let cam = pnp_core::Camera::pinhole(815.8511, 815.8511, 960.0, 540.0).unwrap();
 
     assert_eq!(
         pnp_core::solve_pnp(&landmarks, &obs, &cam, SolvePnpMethod::EPnP).unwrap_err(),

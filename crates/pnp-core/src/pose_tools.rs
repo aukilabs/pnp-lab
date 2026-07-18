@@ -1,17 +1,19 @@
+//! Rigid-pose helpers: OpenCV ↔ OpenGL frame conversion and inversion.
+
 use crate::types::{Pose, Quaternion, Vector3};
 #[allow(unused_imports)]
 use nalgebra;
 use nalgebra::{Quaternion as NaQuaternion, UnitQuaternion, Vector3 as NaVector3}; // for Unit::new_normalize
 
-/// Convert a pose from OpenCV to OpenGL coordinate system.
+/// Convert a pose from the **OpenCV** camera frame to **OpenGL**.
 ///
-/// OpenCV: Y-down, Z-forward
-/// OpenGL: Y-up, Z-backward
+/// | Frame | Axes |
+/// |-------|------|
+/// | OpenCV | Y-down, Z-forward |
+/// | OpenGL | Y-up, Z-backward |
 ///
-/// Position: negate Y and Z.
-/// Rotation: apply 180° rotation around X-axis (flipYZ), then compose with input rotation.
-///
-/// Reference: PoseTools.cpp fromOpenCVToOpenGL
+/// Position: negate Y and Z. Rotation: compose with a 180° rotation about X
+/// (`flipYZ * R_cv`).
 pub fn from_opencv_to_opengl(pose: &Pose) -> Pose {
     let position = Vector3::new(pose.position.x, -pose.position.y, -pose.position.z);
 
@@ -31,19 +33,16 @@ pub fn from_opencv_to_opengl(pose: &Pose) -> Pose {
     Pose::new(position, rotation)
 }
 
-/// Convert a pose from OpenGL to OpenCV coordinate system.
+/// Convert a pose from **OpenGL** to **OpenCV**.
 ///
-/// This is the same operation as from_opencv_to_opengl (self-inverse).
+/// Self-inverse of [`from_opencv_to_opengl`].
 pub fn from_opengl_to_opencv(pose: &Pose) -> Pose {
     from_opencv_to_opengl(pose)
 }
 
-/// Invert a rigid-body pose.
+/// Invert a rigid-body pose `T = (R, t)` as `T⁻¹ = (Rᵀ, −Rᵀ t)`.
 ///
-/// Given pose T = (R, t):
-///   T_inv = (R^T, -R^T * t)
-///
-/// This converts object-in-camera to camera-in-world (and vice versa).
+/// Converts object-in-camera to camera-in-world (and vice versa).
 pub fn invert_pose(pose: &Pose) -> Pose {
     let pos = NaVector3::new(pose.position.x, pose.position.y, pose.position.z);
 

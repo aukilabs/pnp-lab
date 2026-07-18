@@ -1,7 +1,9 @@
+//! Rodrigues rotation vector ↔ matrix conversion (OpenCV-compatible).
+
 use crate::types::Matrix3x3;
 use nalgebra::{Matrix3, Vector3};
 
-/// Convert a Rodrigues rotation vector to a 3x3 rotation matrix.
+/// Convert a Rodrigues rotation vector to a 3×3 rotation matrix.
 ///
 /// The rotation vector encodes the axis of rotation (direction) and
 /// the angle of rotation (magnitude in radians).

@@ -1,15 +1,23 @@
 # Auki PnPKit for Python
 
-NumPy-friendly Python bindings for PnPKit's Perspective-n-Point solvers and
-Ark square-marker pose estimation. The distribution is named
-`aukilabs-pnpkit` and imports as `auki_pnpkit`.
+NumPy-friendly Python bindings for PnPKit’s Perspective-n-Point solvers and
+square-marker pose estimation.
 
-> The package is not yet published to PyPI. After its first release, it will
-> be installable with:
+| | |
+|---|---|
+| **Distribution** | `aukilabs-pnpkit` |
+| **Import** | `auki_pnpkit` |
+| **License** | [MIT](LICENSE) |
+| **Python** | 3.9+ |
 
-```bash
-pip install aukilabs-pnpkit
-```
+> Not yet published to PyPI. Build from this repository (see below). After the
+> first release:
+>
+> ```bash
+> pip install aukilabs-pnpkit
+> ```
+
+## Quick start
 
 ```python
 import numpy as np
@@ -33,54 +41,67 @@ image_points = np.array(
     ],
     dtype=np.float64,
 )
-camera_matrix = np.array(
-    [
-        [815.8511, 0.0, 960.0],
-        [0.0, 815.8511, 540.0],
-        [0.0, 0.0, 1.0],
-    ],
-    dtype=np.float64,
-)
+
+# Preferred: explicit monocular camera (+ optional OpenCV distortion).
+camera = {
+    "fx": 815.8511,
+    "fy": 815.8511,
+    "cx": 960.0,
+    "cy": 540.0,
+    "dist": [],  # or [k1, k2, p1, p2, k3, ...]
+}
 
 pose = auki_pnpkit.solve_pnp(
     object_points,
     image_points,
-    camera_matrix,
+    camera,
     method="iterative",
 )
+# pose["position"] / pose["rotation"] — object pose in OpenGL coordinates
+
 camera_pose = auki_pnpkit.solve_pnp_camera_pose(
     object_points,
     image_points,
-    camera_matrix,
+    camera,
     method="iterative",
 )
 ```
 
-`solve_pnp` returns the object pose in OpenGL coordinates. Use
-`solve_pnp_camera_pose` (or `camera_pose_from_solve_pnp_pose`) when you need the
-camera pose instead.
+A pinhole `(3, 3)` OpenCV camera matrix is also accepted instead of the
+`camera` dict.
 
-For square-marker calibration, pass four corner rays ordered top-left,
-top-right, bottom-right, bottom-left:
+## API overview
 
-```python
-estimate = auki_pnpkit.estimate_square_pose_from_rays(rays, physical_size=0.8)
-print(estimate["pose"], estimate["confidence"])
+| Function | Description |
+|----------|-------------|
+| `solve_pnp(...)` | Object pose (OpenGL) from 3D–2D correspondences |
+| `solve_pnp_camera_pose(...)` | Camera pose (inverse of object pose) |
+| `camera_pose_from_solve_pnp_pose(pose)` | Invert a pose |
+| `estimate_square_pose_from_rays(rays, size)` | Square pose from four rays (TL→TR→BR→BL) |
+| `estimate_square_pose_from_pixels(pixels, size, camera)` | Square pose from four pixels + camera |
+
+Image points are **distorted pixels**. When `dist` is set, they are undistorted
+inside the solver before EPnP / iterative / SQPnP run on an ideal pinhole model.
+
+Methods: `"epnp"`, `"iterative"`, `"sqpnp"`.
+
+## Build and test (from monorepo root)
+
+```bash
+just python-build    # wheel → bindings/python/dist/
+just python-test     # isolated wheel + pytest
 ```
 
-Native solver work runs without holding Python's GIL. Inputs are copied into
-Rust-owned storage before detaching so another thread cannot race the Python
-objects.
-
-Build a local wheel from the repository root with `just python-build`, or run
-the Python integration suite with `just python-test`.
-
-To inspect the artifacts intended for PyPI, run the following from this
-directory:
+From this directory:
 
 ```bash
 maturin build --release --out dist
 maturin sdist --out dist
 ```
 
-The Python distribution is licensed under the [MIT License](LICENSE).
+Native work runs without holding the GIL; inputs are copied into Rust-owned
+storage before detaching.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Parent project: [PnPKit](https://github.com/aukilabs/pnpkit).

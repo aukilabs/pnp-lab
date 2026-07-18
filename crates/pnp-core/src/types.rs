@@ -1,7 +1,9 @@
+//! Shared geometric types for PnP: vectors, poses, landmarks, and errors.
+
 use alloc::string::String;
 use nalgebra::{Matrix3, Quaternion as NaQuaternion, UnitQuaternion, Vector3 as NaVector3};
 
-/// 2D point (image coordinates).
+/// 2D point in image coordinates (pixels; OpenCV convention unless noted).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vector2 {
     pub x: f64,
@@ -9,16 +11,18 @@ pub struct Vector2 {
 }
 
 impl Vector2 {
+    /// Create a 2D vector.
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
+    /// Euclidean length.
     pub fn length(&self) -> f64 {
         libm::sqrt(self.x * self.x + self.y * self.y)
     }
 }
 
-/// 3D point (world coordinates).
+/// 3D point or free vector in world / camera space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vector3 {
     pub x: f64,
@@ -27,18 +31,22 @@ pub struct Vector3 {
 }
 
 impl Vector3 {
+    /// Create a 3D vector.
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 
+    /// Euclidean length.
     pub fn length(&self) -> f64 {
         libm::sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
     }
 
+    /// Convert to nalgebra `Vector3`.
     pub fn to_na(&self) -> NaVector3<f64> {
         NaVector3::new(self.x, self.y, self.z)
     }
 
+    /// Convert from nalgebra `Vector3`.
     pub fn from_na(v: &NaVector3<f64>) -> Self {
         Self {
             x: v.x,
@@ -50,18 +58,18 @@ impl Vector3 {
 
 /// 3D ray in world/tracking coordinates.
 ///
-/// The Ark square pose solver accepts one ray per QR corner, ordered
+/// The square-marker pose solver accepts one ray per corner, ordered
 /// top-left, top-right, bottom-right, bottom-left. Ray directions may be
 /// unnormalized; the solver normalizes them before estimating corner
-/// distances. Units must match the physical QR size passed to the solver
-/// (meters in the AR calibration flow).
+/// distances. Units must match the physical square size passed to the solver
+/// (typically meters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ray3 {
     pub origin: Vector3,
     pub direction: Vector3,
 }
 
-/// Quaternion in Hamilton convention (x, y, z, w) where w is the scalar part.
+/// Unit quaternion in Hamilton convention `(x, y, z, w)` with scalar `w`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quaternion {
     pub x: f64,
@@ -71,10 +79,12 @@ pub struct Quaternion {
 }
 
 impl Quaternion {
+    /// Create a quaternion (not necessarily unit length).
     pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
         Self { x, y, z, w }
     }
 
+    /// Identity rotation `(0, 0, 0, 1)`.
     pub fn identity() -> Self {
         Self {
             x: 0.0,
@@ -84,10 +94,12 @@ impl Quaternion {
         }
     }
 
+    /// Euclidean norm of the four components.
     pub fn norm(&self) -> f64 {
         libm::sqrt(self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w)
     }
 
+    /// Return a unit-length quaternion (identity if the norm is tiny).
     pub fn normalize(&self) -> Self {
         let n = self.norm();
         if n < 1e-15 {
@@ -101,6 +113,7 @@ impl Quaternion {
         }
     }
 
+    /// Conjugate `(-x, -y, -z, w)` (inverse for unit quaternions).
     pub fn conjugate(&self) -> Self {
         Self {
             x: -self.x,
@@ -110,7 +123,7 @@ impl Quaternion {
         }
     }
 
-    /// Hamilton product: self * other
+    /// Hamilton product `self * other`.
     pub fn multiply(&self, other: &Quaternion) -> Self {
         Self {
             x: self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
@@ -139,45 +152,47 @@ impl Quaternion {
     }
 }
 
-/// 3x3 matrix in column-major order.
-/// Storage: m[col * 3 + row], so m[0..3] is column 0, m[3..6] is column 1, etc.
-/// Field naming: M<col><row> — M00 = column 0, row 0.
+/// 3×3 matrix in **column-major** order.
+///
+/// Storage: `m[col * 3 + row]` so `m[0..3]` is column 0. Element access uses
+/// `(col, row)` in [`Self::get`] / [`Self::set`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Matrix3x3 {
+    /// Column-major elements (length 9).
     pub m: [f64; 9],
 }
 
 impl Matrix3x3 {
-    /// Create from column-major array.
+    /// Create from a column-major array of nine elements.
     pub fn new(m: [f64; 9]) -> Self {
         Self { m }
     }
 
-    /// Create identity matrix.
+    /// 3×3 identity.
     pub fn identity() -> Self {
         Self {
             m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
         }
     }
 
-    /// Create zero matrix.
+    /// 3×3 zero matrix.
     pub fn zeros() -> Self {
         Self { m: [0.0; 9] }
     }
 
-    /// Get element at (col, row) — column-major.
+    /// Element at `(col, row)` (column-major layout).
     #[inline]
     pub fn get(&self, col: usize, row: usize) -> f64 {
         self.m[col * 3 + row]
     }
 
-    /// Set element at (col, row) — column-major.
+    /// Set element at `(col, row)` (column-major layout).
     #[inline]
     pub fn set(&mut self, col: usize, row: usize, val: f64) {
         self.m[col * 3 + row] = val;
     }
 
-    /// Transpose: swap rows and columns.
+    /// Matrix transpose.
     pub fn transpose(&self) -> Self {
         let mut result = Self::zeros();
         for col in 0..3 {
@@ -205,16 +220,13 @@ impl Matrix3x3 {
         result
     }
 
-    /// Create a camera intrinsics matrix from fx, fy, cx, cy.
-    /// Stored in column-major order so that when transposed to row-major,
-    /// we get [[fx, 0, cx], [0, fy, cy], [0, 0, 1]].
+    /// Build the pinhole intrinsics matrix `K` from focal lengths and principal point.
+    ///
+    /// Column-major storage of
+    /// `[[fx, 0, cx], [0, fy, cy], [0, 0, 1]]`, i.e. elements
+    /// `[fx, 0, 0, 0, fy, 0, cx, cy, 1]`. Prefer [`crate::Camera`] for public APIs
+    /// that also carry distortion.
     pub fn camera_matrix(fx: f64, fy: f64, cx: f64, cy: f64) -> Self {
-        // Column-major: the Matrix3x3 stores the transposed version of the
-        // row-major camera matrix [[fx,0,cx],[0,fy,cy],[0,0,1]].
-        // M00=fx, M10=0, M20=cx => column 0 row 0 = fx, col 1 row 0 = 0, col 2 row 0 = cx
-        // But in the reference code, Mij means column i, row j.
-        // The JS test stores: M00=fx, M10=0, M20=cx, M01=0, M11=fy, M21=cy, M02=0, M12=0, M22=1
-        // In column-major storage: [fx, 0, 0, 0, fy, 0, cx, cy, 1]
         let mut m = Self::zeros();
         m.set(0, 0, fx); // M00 = fx
         m.set(1, 1, fy); // M11 = fy
@@ -225,7 +237,7 @@ impl Matrix3x3 {
     }
 }
 
-/// Convert a rotation matrix to a quaternion using nalgebra.
+/// Convert a 3×3 rotation matrix to a unit quaternion via nalgebra.
 pub fn rotation_matrix_to_quaternion(m: &Matrix3x3) -> Quaternion {
     let na_mat = m.to_na();
     let rotation = nalgebra::Rotation3::from_matrix_unchecked(na_mat);
@@ -233,18 +245,22 @@ pub fn rotation_matrix_to_quaternion(m: &Matrix3x3) -> Quaternion {
     Quaternion::from_na_unit(&uq)
 }
 
-/// 6-DoF pose: position + rotation.
+/// 6-DoF rigid pose: translation + rotation quaternion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pose {
+    /// Translation of the frame origin.
     pub position: Vector3,
+    /// Orientation as a Hamilton quaternion `(x, y, z, w)`.
     pub rotation: Quaternion,
 }
 
 impl Pose {
+    /// Construct a pose from position and rotation.
     pub fn new(position: Vector3, rotation: Quaternion) -> Self {
         Self { position, rotation }
     }
 
+    /// Identity pose (zero translation, identity rotation).
     pub fn identity() -> Self {
         Self {
             position: Vector3::new(0.0, 0.0, 0.0),
@@ -256,9 +272,8 @@ impl Pose {
 /// Pose estimate recovered from four square-corner rays.
 ///
 /// `pose` is in the same world/tracking coordinate frame as the input rays.
-/// Its rotation follows Unity Ark's convention: local +X points from the
-/// top-left corner to the top-right corner, local +Y points upward on the QR
-/// face, and local +Z is `cross(+X, +Y)`.
+/// Local axes on the square: +X from top-left to top-right, +Y upward on the
+/// marker face, +Z = `cross(+X, +Y)` (right-handed).
 ///
 /// `confidence` is a bounded [0, 1] score derived from the normalized residual
 /// error; exact synthetic geometry should be close to 1. `ray_distances`
@@ -273,34 +288,44 @@ pub struct SquarePoseEstimate {
     pub ray_distances: [f64; 4],
 }
 
-/// A known 3D point in world coordinates.
+/// A known 3D point in world (or object) coordinates, tagged by string `id`.
 #[derive(Debug, Clone)]
 pub struct Landmark {
+    /// Identifier matched against [`LandmarkObservation::id`].
     pub id: String,
+    /// 3D position of the landmark.
     pub position: Vector3,
 }
 
-/// A 2D observation of a landmark in image coordinates.
+/// A 2D image observation of a landmark, tagged by the same string `id`.
 #[derive(Debug, Clone)]
 pub struct LandmarkObservation {
+    /// Identifier matched against [`Landmark::id`].
     pub id: String,
+    /// Pixel position (distorted unless the caller already undistorted).
     pub position: Vector2,
 }
 
-/// Solver method selection.
+/// PnP solver selection for [`crate::solve_pnp`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SolvePnpMethod {
+    /// Efficient PnP (Lepetit et al.); typically ≥ 4 points.
     EPnP,
+    /// Levenberg–Marquardt refinement of reprojection error (often seeded by EPnP).
     Iterative,
+    /// SQPnP (Terzakis & Lourakis); supports as few as 3 points.
     SQPnP,
 }
 
-/// Errors that can occur during PnP solving.
+/// Errors returned by public PnP APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PnpError {
+    /// Too few correspondences for the selected method.
     InsufficientPoints,
+    /// Numerical failure, bad calibration, or residual above threshold.
     SolverFailed,
+    /// Landmark / observation count or id mismatch.
     MismatchedCounts,
 }
 

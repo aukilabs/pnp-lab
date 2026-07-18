@@ -1,11 +1,19 @@
-package auki:pnp@0.1.0;
+package auki:pnp@0.2.0;
 
 interface types {
     record vector2 { x: f64, y: f64 }
     record vector3 { x: f64, y: f64, z: f64 }
     record quaternion { x: f64, y: f64, z: f64, w: f64 }
     record matrix3x3 { m00: f64, m01: f64, m02: f64, m10: f64, m11: f64, m12: f64, m20: f64, m21: f64, m22: f64 }
+    /// Calibrated monocular camera. `dist` is OpenCV-ordered coeffs (empty = pinhole).
+    record camera { fx: f64, fy: f64, cx: f64, cy: f64, dist: list<f64> }
     record pose { position: vector3, rotation: quaternion }
+    record square-pose-estimate {
+        pose: pose,
+        confidence: f64,
+        normalized-corner-error: f64,
+        ray-distances: list<f64>,
+    }
     record landmark { id: string, position: vector3 }
     record landmark-observation { id: string, position: vector2 }
     enum solve-pnp-method { epnp, iterative, sqpnp }
@@ -13,23 +21,29 @@ interface types {
 }
 
 interface solver {
-    use types.{landmark, landmark-observation, matrix3x3, pose, solve-pnp-method, pnp-error};
+    use types.{landmark, landmark-observation, camera, pose, solve-pnp-method, pnp-error, vector2, square-pose-estimate};
 
     solve-pnp: func(
         landmarks: list<landmark>,
         observations: list<landmark-observation>,
-        camera-matrix: matrix3x3,
+        camera: camera,
         method: solve-pnp-method,
     ) -> result<pose, pnp-error>;
 
     solve-pnp-camera-pose: func(
         landmarks: list<landmark>,
         observations: list<landmark-observation>,
-        camera-matrix: matrix3x3,
+        camera: camera,
         method: solve-pnp-method,
     ) -> result<pose, pnp-error>;
 
     camera-pose-from-solve-pnp-pose: func(pose: pose) -> pose;
+
+    estimate-square-pose-from-pixels: func(
+        pixels: list<vector2>,
+        physical-size: f64,
+        camera: camera,
+    ) -> result<square-pose-estimate, pnp-error>;
 }
 
 world pnp {

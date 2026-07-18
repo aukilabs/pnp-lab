@@ -11,7 +11,7 @@ impl Guest for PnpComponent {
     fn solve_pnp(
         landmarks: Vec<wit::Landmark>,
         observations: Vec<wit::LandmarkObservation>,
-        camera_matrix: wit::Matrix3x3,
+        camera: wit::Camera,
         method: wit::SolvePnpMethod,
     ) -> Result<wit::Pose, wit::PnpError> {
         let core_landmarks = landmarks
@@ -22,7 +22,7 @@ impl Guest for PnpComponent {
             .into_iter()
             .map(to_core_observation)
             .collect::<Vec<_>>();
-        let core_cam = to_core_matrix(camera_matrix);
+        let core_cam = to_core_camera(camera)?;
         let core_method = to_core_method(method);
 
         pnp_core::solve_pnp(&core_landmarks, &core_obs, &core_cam, core_method)
@@ -33,7 +33,7 @@ impl Guest for PnpComponent {
     fn solve_pnp_camera_pose(
         landmarks: Vec<wit::Landmark>,
         observations: Vec<wit::LandmarkObservation>,
-        camera_matrix: wit::Matrix3x3,
+        camera: wit::Camera,
         method: wit::SolvePnpMethod,
     ) -> Result<wit::Pose, wit::PnpError> {
         let core_landmarks = landmarks
@@ -44,7 +44,7 @@ impl Guest for PnpComponent {
             .into_iter()
             .map(to_core_observation)
             .collect::<Vec<_>>();
-        let core_cam = to_core_matrix(camera_matrix);
+        let core_cam = to_core_camera(camera)?;
         let core_method = to_core_method(method);
 
         pnp_core::solve_pnp_camera_pose(&core_landmarks, &core_obs, &core_cam, core_method)
@@ -57,9 +57,27 @@ impl Guest for PnpComponent {
         let result = pnp_core::camera_pose_from_solve_pnp_pose(&core_pose);
         to_wit_pose(&result)
     }
-}
 
-// --- Type conversions ---
+    fn estimate_square_pose_from_pixels(
+        pixels: Vec<wit::Vector2>,
+        physical_size: f64,
+        camera: wit::Camera,
+    ) -> Result<wit::SquarePoseEstimate, wit::PnpError> {
+        if pixels.len() != 4 {
+            return Err(wit::PnpError::InsufficientPoints);
+        }
+        let core_cam = to_core_camera(camera)?;
+        let corners = [
+            core::Vector2::new(pixels[0].x, pixels[0].y),
+            core::Vector2::new(pixels[1].x, pixels[1].y),
+            core::Vector2::new(pixels[2].x, pixels[2].y),
+            core::Vector2::new(pixels[3].x, pixels[3].y),
+        ];
+        pnp_core::estimate_square_pose_from_pixels(corners, physical_size, &core_cam)
+            .map(|e| to_wit_square_estimate(&e))
+            .map_err(to_wit_error)
+    }
+}
 
 fn to_core_landmark(l: wit::Landmark) -> core::Landmark {
     core::Landmark {
@@ -75,13 +93,8 @@ fn to_core_observation(o: wit::LandmarkObservation) -> core::LandmarkObservation
     }
 }
 
-fn to_core_matrix(m: wit::Matrix3x3) -> core::Matrix3x3 {
-    // WIT uses M<col><row> naming, pnp-core uses column-major m[col*3+row]
-    core::Matrix3x3 {
-        m: [
-            m.m00, m.m01, m.m02, m.m10, m.m11, m.m12, m.m20, m.m21, m.m22,
-        ],
-    }
+fn to_core_camera(c: wit::Camera) -> Result<pnp_core::Camera, wit::PnpError> {
+    pnp_core::Camera::new(c.fx, c.fy, c.cx, c.cy, &c.dist).map_err(|_| wit::PnpError::SolverFailed)
 }
 
 fn to_core_method(m: wit::SolvePnpMethod) -> core::SolvePnpMethod {
@@ -112,6 +125,15 @@ fn to_wit_pose(p: &core::Pose) -> wit::Pose {
             z: p.rotation.z,
             w: p.rotation.w,
         },
+    }
+}
+
+fn to_wit_square_estimate(e: &core::SquarePoseEstimate) -> wit::SquarePoseEstimate {
+    wit::SquarePoseEstimate {
+        pose: to_wit_pose(&e.pose),
+        confidence: e.confidence,
+        normalized_corner_error: e.normalized_corner_error,
+        ray_distances: e.ray_distances.to_vec(),
     }
 }
 

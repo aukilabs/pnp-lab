@@ -1,13 +1,15 @@
 import PnpModule from "./PnpModule";
 import type {
+  PnpCamera,
   PnpLandmark,
   PnpLandmarkObservation,
-  PnpMatrix3x3,
   PnpPose,
+  PnpSquarePixels,
   PnpSquareRays,
   SolvePnpMethod,
   SquarePoseEstimate,
 } from "./Pnp.types";
+import { cameraPixelsToSquareRays } from "./viewport-rays";
 
 export * from "./Pnp.types";
 export {
@@ -24,13 +26,13 @@ export {
 export function solvePnpCameraPose(
   landmarks: readonly PnpLandmark[],
   observations: readonly PnpLandmarkObservation[],
-  cameraMatrix: PnpMatrix3x3,
+  camera: PnpCamera,
   method: SolvePnpMethod = "iterative",
 ): Promise<PnpPose> {
   return PnpModule.solvePnpCameraPose(
     landmarks,
     observations,
-    cameraMatrix,
+    camera,
     method,
   );
 }
@@ -39,5 +41,18 @@ export function estimateSquarePoseFromRays(
   rays: PnpSquareRays,
   physicalSize: number,
 ): Promise<SquarePoseEstimate> {
+  return PnpModule.estimateSquarePoseFromRays(rays, physicalSize);
+}
+
+export function estimateSquarePoseFromPixels(
+  pixels: PnpSquarePixels,
+  physicalSize: number,
+  camera: PnpCamera,
+): Promise<SquarePoseEstimate> {
+  if (typeof PnpModule.estimateSquarePoseFromPixels === "function") {
+    return PnpModule.estimateSquarePoseFromPixels(pixels, physicalSize, camera);
+  }
+  // Fallback: undistort/unproject in JS then use the ray API.
+  const rays = cameraPixelsToSquareRays({ camera, pixels });
   return PnpModule.estimateSquarePoseFromRays(rays, physicalSize);
 }

@@ -1,36 +1,54 @@
 # PnPKit
 
-PnPKit is a pure-Rust [Perspective-n-Point](https://en.wikipedia.org/wiki/Perspective-n-Point)
-pose estimator. It recovers the 6-DoF pose of a calibrated camera from known 3D
-landmarks and their 2D image observations, with no OpenCV dependency.
+PnPKit is a pure-Rust
+[Perspective-n-Point](https://en.wikipedia.org/wiki/Perspective-n-Point) pose
+estimator. Given a calibrated monocular camera, known 3D landmarks, and their
+2D image observations, it recovers a 6-DoF pose with **no OpenCV runtime
+dependency**.
 
-The core is written in Rust and is exposed through Rust, Python/NumPy, C,
-WebAssembly, and an Expo module for React Native.
+The same solvers are available from Rust, Python/NumPy, C, WebAssembly, and an
+Expo module for React Native.
+
+> **Pre-1.0 software.** APIs may still change. Prefer pinning a git revision or
+> crate version, and read [CHANGELOG.md](CHANGELOG.md) before upgrading.
 
 ## Features
 
-- Three solver methods: EPnP, iterative (Levenberg-Marquardt), and SQPnP
-- Square-marker pose from camera rays (AR / portal calibration workflows)
-- `no_std` compatible core (with `alloc`)
-- C FFI with auto-generated header for iOS / Android / desktop embedding
-- Python/NumPy bindings (`aukilabs-pnpkit` / `auki_pnpkit`)
-- WASM Component Model interface via WIT (`auki:pnp@0.1.0`)
-- Numerically validated against OpenCV `cv::solvePnP` reference output
+- Three solver methods: **EPnP**, **iterative** (Levenberg–Marquardt), and **SQPnP**
+- First-class monocular `Camera` model with optional Brown–Conrady distortion
+  (OpenCV coefficient order)
+- Square-marker pose from **camera rays** or **image pixels** (AR / portal
+  calibration workflows)
+- `no_std` + `alloc` core for embedded and mobile targets
+- C FFI with auto-generated header (`cbindgen`)
+- Python/NumPy package (`aukilabs-pnpkit` / `auki_pnpkit`)
+- WASM Component Model interface (`auki:pnp@0.2.0`)
+- Numerically checked against OpenCV `cv::solvePnP` reference vectors
 
-## Workspace structure
+## Getting started
 
-```text
-crates/
-  pnp-core/    Pure Rust solver library (no_std + alloc)
-  pnp-ffi/     C FFI layer with cbindgen-generated header
-  pnp-wasm/    WASM Component Model guest (wit-bindgen)
+### Requirements
 
-bindings/
-  python/      PyPI/Maturin project with NumPy-friendly API
-  expo-pnp/    Expo module + prebuilt Android/iOS natives
+| Tool | Required for |
+|------|----------------|
+| [Rust](https://rustup.rs/) (stable; see `rust-toolchain.toml`) | Building and testing the workspace |
+| [just](https://just.systems/) (optional) | Short recipes for multi-target workflows |
+| Python 3.9+ + [uv](https://github.com/astral-sh/uv) or Maturin | Python bindings |
+| Android NDK + `cbindgen` | Android native artifacts |
+| macOS + Xcode | iOS native artifacts |
+| `cargo-component` (+ `jco` for JS transpile) | WASM |
+
+### Clone and verify
+
+HTTPS:
+
+```bash
+git clone https://github.com/aukilabs/pnpkit.git
+cd pnpkit
+cargo test --workspace --locked
 ```
 
-## Quick start
+SSH:
 
 ```bash
 git clone git@github.com:aukilabs/pnpkit.git
@@ -38,29 +56,101 @@ cd pnpkit
 cargo test --workspace --locked
 ```
 
-[`just`](https://just.systems/) is optional but provides the shortest commands:
+With `just`:
 
 ```bash
-just setup          # check tools, targets, NDK
-just test           # Rust workspace tests
-just expo-native    # Android + iOS artifacts → bindings/expo-pnp
+just setup    # check toolchain, targets, optional deps
+just test     # full Rust workspace tests
 ```
 
-### Rust
+### Rust (core library)
 
 ```toml
 [dependencies]
-pnp-core = { path = "crates/pnp-core" }
+pnp-core = { git = "https://github.com/aukilabs/pnpkit", package = "pnp-core" }
+# or, in this workspace:
+# pnp-core = { path = "crates/pnp-core" }
 ```
 
 ```rust
-use pnp_core::types::*;
+use pnp_core::{
+    solve_pnp, Camera, Landmark, LandmarkObservation, SolvePnpMethod, Vector2, Vector3,
+};
+
+fn estimate_object_pose() -> Result<pnp_core::Pose, pnp_core::PnpError> {
+    let camera = Camera::pinhole(
+        /* fx */ 815.8511,
+        /* fy */ 815.8511,
+        /* cx */ 960.0,
+        /* cy */ 540.0,
+    )?;
+    // Optional distortion (OpenCV order: k1, k2, p1, p2 [, k3 ...]):
+    // let camera = Camera::new(815.8511, 815.8511, 960.0, 540.0, &[0.1, -0.05, 0.0, 0.0, 0.0])?;
+
+    let landmarks = vec![
+        Landmark {
+            id: "0".into(),
+            position: Vector3::new(-0.15, -0.15, 0.0),
+        },
+        Landmark {
+            id: "1".into(),
+            position: Vector3::new(0.15, -0.15, 0.0),
+        },
+        Landmark {
+            id: "2".into(),
+            position: Vector3::new(0.15, 0.15, 0.0),
+        },
+        Landmark {
+            id: "3".into(),
+            position: Vector3::new(-0.15, 0.15, 0.0),
+        },
+    ];
+    let observations = vec![
+        LandmarkObservation {
+            id: "0".into(),
+            position: Vector2::new(849.3577, 461.7641),
+        },
+        LandmarkObservation {
+            id: "1".into(),
+            position: Vector2::new(1070.642, 461.7641),
+        },
+        LandmarkObservation {
+            id: "2".into(),
+            position: Vector2::new(1096.898, 636.8014),
+        },
+        LandmarkObservation {
+            id: "3".into(),
+            position: Vector2::new(823.1021, 636.8014),
+        },
+    ];
+
+    // Returns object pose in OpenGL coordinates (Y-up, Z-backward).
+    // Image points are distorted pixels; Camera undistorts when dist is set.
+    solve_pnp(
+        &landmarks,
+        &observations,
+        &camera,
+        SolvePnpMethod::Iterative,
+    )
+}
 ```
+
+Useful entry points:
+
+| API | Purpose |
+|-----|---------|
+| `solve_pnp` | Object pose in OpenGL coordinates |
+| `solve_pnp_camera_pose` | Camera pose (inverse of object pose) |
+| `estimate_square_pose_from_rays` | Square marker from four 3D rays |
+| `estimate_square_pose_from_pixels` | Square marker from four image corners + `Camera` |
+| `Camera::project` / `undistort_pixel` / `unproject_opengl_ray` | Projection helpers |
 
 ### Python
 
+Build a local wheel (requires Maturin or `uv`/`uvx`):
+
 ```bash
-just python-build         # wheel → bindings/python/dist
+just python-build         # → bindings/python/dist/
 just python-test          # isolated wheel + pytest
 ```
 
@@ -68,20 +158,51 @@ just python-test          # isolated wheel + pytest
 import numpy as np
 import auki_pnpkit
 
-pose = auki_pnpkit.solve_pnp(
-    object_points,   # (N, 3)
-    image_points,    # (N, 2)
-    camera_matrix,   # (3, 3) OpenCV K
-    method="iterative",
+object_points = np.array(
+    [[-0.15, -0.15, 0.0], [0.15, -0.15, 0.0], [0.15, 0.15, 0.0], [-0.15, 0.15, 0.0]],
+    dtype=np.float64,
 )
+image_points = np.array(
+    [[849.3577, 461.7641], [1070.642, 461.7641], [1096.898, 636.8014], [823.1021, 636.8014]],
+    dtype=np.float64,
+)
+camera = {
+    "fx": 815.8511,
+    "fy": 815.8511,
+    "cx": 960.0,
+    "cy": 540.0,
+    "dist": [],  # or OpenCV [k1, k2, p1, p2, k3, ...]
+}
+
+pose = auki_pnpkit.solve_pnp(object_points, image_points, camera, method="iterative")
+print(pose["position"], pose["rotation"])
 ```
 
-See [bindings/python/README.md](bindings/python/README.md).
+A pinhole `(3, 3)` OpenCV camera matrix is also accepted in place of the
+`camera` dict. Full API notes: [bindings/python/README.md](bindings/python/README.md).
 
-### Expo
+### C / native
 
-Autolink `bindings/expo-pnp` (for example via a git submodule under
-`modules/pnpkit` and Expo `autolinking.searchPaths`):
+```bash
+cargo build --release -p pnp-ffi --locked
+# header: crates/pnp-ffi/include/pnp.h
+# library: target/release/libpeyote_pnp_ffi.{a,so,dylib}
+```
+
+Link against the static or dynamic library and include `pnp.h`. Solve entry
+points take a `pnp_camera_t` (`fx`, `fy`, `cx`, `cy`, optional `dist`).
+
+### Expo / React Native
+
+Prebuilt Android `.so` files and an iOS XCFramework live under
+`bindings/expo-pnp` after:
+
+```bash
+just expo-native
+```
+
+Autolink the package (for example via a git submodule and Expo
+`autolinking.searchPaths`):
 
 ```json
 {
@@ -94,28 +215,63 @@ Autolink `bindings/expo-pnp` (for example via a git submodule under
 ```
 
 ```ts
-import { estimateSquarePoseFromRays } from "expo-pnp";
+import {
+  estimateSquarePoseFromRays,
+  estimateSquarePoseFromPixels,
+  solvePnpCameraPose,
+} from "expo-pnp";
 ```
 
-## Development
+See [bindings/README.md](bindings/README.md) and
+[bindings/expo-pnp/README.md](bindings/expo-pnp/README.md).
+
+## Coordinate conventions
+
+| Topic | Convention |
+|-------|------------|
+| Image pixels | OpenCV-style: origin top-left, +X right, +Y down |
+| `solve_pnp` result | **OpenGL** object pose (Y-up, Z-backward) |
+| Algebraic solvers (internal) | OpenCV camera frame (+Z forward) then converted |
+| Distortion | OpenCV Brown–Conrady / rational: `k1,k2,p1,p2[,k3[,k4,k5,k6]]` |
+| Square corners | Top-left → top-right → bottom-right → bottom-left |
+| OpenGL rays from pixels | `x=(u-cx)/fx`, `y=-(v-cy)/fy`, `z=-1` after optional undistort |
+
+## Repository layout
+
+```text
+crates/
+  pnp-core/     Pure Rust solvers (no_std + alloc)
+  pnp-ffi/      C ABI + cbindgen header
+  pnp-wasm/     WASM Component Model guest (WIT)
+
+bindings/
+  python/       Maturin / PyO3 package (aukilabs-pnpkit)
+  expo-pnp/     Expo module + prebuilt Android/iOS natives
+
+scripts/        Cross-target build and check helpers
+tests/          OpenCV reference vectors and generator
+```
+
+## Development commands
 
 | Command | Purpose |
-|---|---|
-| `just test` | Workspace tests (release-friendly via `--locked`) |
-| `just check-nostd` | Verify `pnp-core` builds without `std` |
-| `just expo-android` | Install Android `.so` files into the Expo package |
-| `just expo-ios` | Package `PnpRust.xcframework` into the Expo package |
-| `just expo-native` | Both mobile targets |
+|---------|---------|
+| `just test` | Workspace tests (`--locked`) |
+| `just check-nostd` | Verify `pnp-core` without `std` |
+| `just check-all` | Tests + no_std + clippy |
+| `just python-build` / `just python-test` | Python wheel and integration tests |
+| `just expo-android` / `just expo-ios` / `just expo-native` | Mobile artifacts → Expo package |
 | `just build-wasm-release` | WASM component |
-| `just python-build` | Build Python wheel into `bindings/python/dist` |
-| `just python-test` | Isolated Python/NumPy integration tests |
+| `just generate-reference` | Regenerate OpenCV reference JSON |
 
-Additional platform requirements:
+CI (GitHub Actions) runs on every push and pull request: `cargo fmt`, workspace
+tests, `no_std` check, clippy, and the Python integration suite
+(`.github/workflows/ci.yml`).
 
-- Android builds need the Android NDK and `cbindgen`
-- iOS builds need macOS, Xcode, and the iOS Rust targets
-- WASM builds need `cargo-component` (and `jco` for JS transpile)
-- Python bindings need Python 3.9+ and Maturin or `uv`/`uvx`
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+coding guidelines, testing, and pull-request expectations.
 
 ## License
 

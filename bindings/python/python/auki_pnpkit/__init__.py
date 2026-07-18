@@ -12,35 +12,29 @@ __version__ = _native.__version__
 def solve_pnp(
     landmarks: Any,
     observations: Any,
-    camera_matrix: Any,
+    camera: Any,
     method: str = "iterative",
 ) -> dict[str, Any]:
     """Estimate object pose from 3D–2D correspondences (OpenGL coordinates).
 
-    ``landmarks`` may be a sequence of ``{"id", "position"}`` mappings or an
-    ``(N, 3)`` float array of object points (ids default to ``"0".."N-1"``).
-    ``observations`` may be a sequence of ``{"id", "position"}`` mappings or an
-    ``(N, 2)`` float array of image points.
+    ``camera`` is a calibrated monocular model:
+    ``{"fx", "fy", "cx", "cy", "dist"?}`` with OpenCV distortion coeffs, or a
+    pinhole ``(3, 3)`` OpenCV camera matrix.
 
-    ``camera_matrix`` accepts a standard OpenCV ``(3, 3)`` array
-    ``[[fx, 0, cx], [0, fy, cy], [0, 0, 1]]``, a length-9 column-major sequence,
-    a mapping with key ``m``, or a mapping with ``fx``/``fy``/``cx``/``cy``.
-
-    ``method`` is one of ``"epnp"``, ``"iterative"``, or ``"sqpnp"``.
+    Observations are **distorted pixels**. Distortion is undistorted inside the
+    solver before EPnP / iterative / SQPnP run on an ideal pinhole model.
     """
-    return _native.solve_pnp(landmarks, observations, camera_matrix, method)
+    return _native.solve_pnp(landmarks, observations, camera, method)
 
 
 def solve_pnp_camera_pose(
     landmarks: Any,
     observations: Any,
-    camera_matrix: Any,
+    camera: Any,
     method: str = "iterative",
 ) -> dict[str, Any]:
     """Estimate camera pose (inverse of the object pose returned by :func:`solve_pnp`)."""
-    return _native.solve_pnp_camera_pose(
-        landmarks, observations, camera_matrix, method
-    )
+    return _native.solve_pnp_camera_pose(landmarks, observations, camera, method)
 
 
 def camera_pose_from_solve_pnp_pose(pose: Any) -> dict[str, Any]:
@@ -52,19 +46,30 @@ def estimate_square_pose_from_rays(
     rays: Any,
     physical_size: float,
 ) -> dict[str, Any]:
-    """Estimate an Ark square-marker pose from four corner rays.
+    """Estimate a planar square-marker pose from four corner rays.
 
-    ``rays`` must be ordered top-left, top-right, bottom-right, bottom-left.
-    Each ray is a mapping with ``origin`` and ``direction`` vectors, or an
-    ``(4, 6)`` array of ``[ox, oy, oz, dx, dy, dz]`` rows. Directions may be
-    unnormalized. ``physical_size`` uses the same units as the ray frame.
+    Rays must already be unprojected (distortion handled by the caller).
+    Prefer :func:`estimate_square_pose_from_pixels` when you have image pixels.
     """
     return _native.estimate_square_pose_from_rays(rays, physical_size)
+
+
+def estimate_square_pose_from_pixels(
+    pixels: Any,
+    physical_size: float,
+    camera: Any,
+) -> dict[str, Any]:
+    """Estimate a planar square-marker pose from four corner pixels and a camera.
+
+    Corner order is top-left, top-right, bottom-right, bottom-left.
+    """
+    return _native.estimate_square_pose_from_pixels(pixels, physical_size, camera)
 
 
 __all__ = [
     "__version__",
     "camera_pose_from_solve_pnp_pose",
+    "estimate_square_pose_from_pixels",
     "estimate_square_pose_from_rays",
     "solve_pnp",
     "solve_pnp_camera_pose",

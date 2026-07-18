@@ -76,6 +76,29 @@ typedef struct pnp_ray_t {
 } pnp_ray_t;
 
 /**
+ * 2D vector.
+ */
+typedef struct pnp_vector2_t {
+    double x;
+    double y;
+} pnp_vector2_t;
+
+/**
+ * Calibrated monocular camera (OpenCV intrinsics + optional distortion).
+ *
+ * `dist` may be null when `dist_len == 0`. Supported lengths: 0, 4, 5, 8
+ * (OpenCV Brown–Conrady / rational order).
+ */
+typedef struct pnp_camera_t {
+    double fx;
+    double fy;
+    double cx;
+    double cy;
+    const double *dist;
+    uintptr_t dist_len;
+} pnp_camera_t;
+
+/**
  * Result struct returned by solve functions.
  */
 typedef struct pnp_result_t {
@@ -92,14 +115,6 @@ typedef struct pnp_landmark_t {
 } pnp_landmark_t;
 
 /**
- * 2D vector.
- */
-typedef struct pnp_vector2_t {
-    double x;
-    double y;
-} pnp_vector2_t;
-
-/**
  * Landmark observation (2D point with string ID).
  */
 typedef struct pnp_landmark_observation_t {
@@ -107,19 +122,12 @@ typedef struct pnp_landmark_observation_t {
     struct pnp_vector2_t position;
 } pnp_landmark_observation_t;
 
-/**
- * 3x3 matrix in column-major order: m[col*3 + row].
- */
-typedef struct pnp_matrix3x3_t {
-    double m[9];
-} pnp_matrix3x3_t;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
 
 /**
- * Estimate an Ark square pose from four corner rays.
+ * Estimate a planar square-marker pose from four corner rays.
  *
  * Rays must be ordered top-left, top-right, bottom-right, bottom-left.
  * Directions may be unnormalized. `physical_size` must use the same units as
@@ -133,18 +141,33 @@ struct pnp_square_pose_estimate_t peyote_pnp_estimate_square_pose_from_rays(cons
                                                                             double physical_size);
 
 /**
+ * Estimate a planar square-marker pose from four corner image pixels and a camera.
+ *
+ * Pixels must be ordered top-left, top-right, bottom-right, bottom-left.
+ *
+ * # Safety
+ * `pixels` must point to exactly four valid `pnp_vector2_t` values when
+ * `num_pixels == 4`. `camera` must be a valid pointer; see `pnp_camera_t`.
+ */
+struct pnp_square_pose_estimate_t peyote_pnp_estimate_square_pose_from_pixels(const struct pnp_vector2_t *pixels,
+                                                                              uintptr_t num_pixels,
+                                                                              double physical_size,
+                                                                              const struct pnp_camera_t *camera);
+
+/**
  * Solve PnP and return object pose in OpenGL coordinates.
  *
  * # Safety
  * `landmarks` must point to `num_landmarks` valid `pnp_landmark_t` structs.
  * `observations` must point to `num_observations` valid `pnp_landmark_observation_t` structs.
  * All `id` pointers within landmarks/observations must be valid null-terminated C strings.
+ * `camera` must be valid; if `dist_len > 0`, `dist` must point to that many doubles.
  */
 struct pnp_result_t peyote_pnp_solve(const struct pnp_landmark_t *landmarks,
                                      uintptr_t num_landmarks,
                                      const struct pnp_landmark_observation_t *observations,
                                      uintptr_t num_observations,
-                                     const struct pnp_matrix3x3_t *camera_matrix,
+                                     const struct pnp_camera_t *camera,
                                      enum pnp_method_t method);
 
 /**
@@ -157,7 +180,7 @@ struct pnp_result_t peyote_pnp_solve_camera_pose(const struct pnp_landmark_t *la
                                                  uintptr_t num_landmarks,
                                                  const struct pnp_landmark_observation_t *observations,
                                                  uintptr_t num_observations,
-                                                 const struct pnp_matrix3x3_t *camera_matrix,
+                                                 const struct pnp_camera_t *camera,
                                                  enum pnp_method_t method);
 
 /**

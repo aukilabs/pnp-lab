@@ -3,9 +3,11 @@
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pnp_core::{
     camera_pose_from_solve_pnp_pose as core_camera_pose_from_solve_pnp_pose,
-    estimate_square_pose_from_rays as core_estimate_square_pose_from_rays, solve_pnp as core_solve_pnp,
-    solve_pnp_camera_pose as core_solve_pnp_camera_pose, Landmark, LandmarkObservation, Matrix3x3,
-    PnpError, Pose, Quaternion, Ray3, SolvePnpMethod, SquarePoseEstimate, Vector2, Vector3,
+    estimate_square_pose_from_pixels as core_estimate_square_pose_from_pixels,
+    estimate_square_pose_from_rays as core_estimate_square_pose_from_rays,
+    solve_pnp as core_solve_pnp, solve_pnp_camera_pose as core_solve_pnp_camera_pose, Camera,
+    Landmark, LandmarkObservation, Matrix3x3, PnpError, Pose, Quaternion, Ray3, SolvePnpMethod,
+    SquarePoseEstimate, Vector2, Vector3,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -15,9 +17,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn pnp_error(error: PnpError) -> PyErr {
     match error {
-        PnpError::InsufficientPoints => {
-            PyValueError::new_err("insufficient points for solver")
-        }
+        PnpError::InsufficientPoints => PyValueError::new_err("insufficient points for solver"),
         PnpError::SolverFailed => PyRuntimeError::new_err("solver failed to converge"),
         PnpError::MismatchedCounts => {
             PyValueError::new_err("landmark and observation counts do not match")
@@ -49,10 +49,7 @@ fn as_f64(value: &Bound<'_, PyAny>) -> PyResult<f64> {
     )))
 }
 
-fn mapping_get<'py>(
-    value: &Bound<'py, PyAny>,
-    key: &str,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
+fn mapping_get<'py>(value: &Bound<'py, PyAny>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     if value.hasattr(key)? {
         let item = value.getattr(key)?;
         if item.is_none() {
@@ -88,8 +85,8 @@ fn parse_vector2(value: &Bound<'_, PyAny>) -> PyResult<Vector2> {
     }
 
     if let Some(x) = mapping_get(value, "x")? {
-        let y = mapping_get(value, "y")?
-            .ok_or_else(|| PyValueError::new_err("vector2 missing 'y'"))?;
+        let y =
+            mapping_get(value, "y")?.ok_or_else(|| PyValueError::new_err("vector2 missing 'y'"))?;
         return Ok(Vector2::new(as_f64(&x)?, as_f64(&y)?));
     }
 
@@ -122,10 +119,10 @@ fn parse_vector3(value: &Bound<'_, PyAny>) -> PyResult<Vector3> {
     }
 
     if let Some(x) = mapping_get(value, "x")? {
-        let y = mapping_get(value, "y")?
-            .ok_or_else(|| PyValueError::new_err("vector3 missing 'y'"))?;
-        let z = mapping_get(value, "z")?
-            .ok_or_else(|| PyValueError::new_err("vector3 missing 'z'"))?;
+        let y =
+            mapping_get(value, "y")?.ok_or_else(|| PyValueError::new_err("vector3 missing 'y'"))?;
+        let z =
+            mapping_get(value, "z")?.ok_or_else(|| PyValueError::new_err("vector3 missing 'z'"))?;
         return Ok(Vector3::new(as_f64(&x)?, as_f64(&y)?, as_f64(&z)?));
     }
 
@@ -296,56 +293,42 @@ fn parse_observations(value: &Bound<'_, PyAny>) -> PyResult<Vec<LandmarkObservat
     Ok(observations)
 }
 
-fn parse_camera_matrix(value: &Bound<'_, PyAny>) -> PyResult<Matrix3x3> {
+fn parse_dist_coeffs(value: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+    if value.is_none() {
+        return Ok(Vec::new());
+    }
+    if let Ok(array) = value.extract::<PyReadonlyArray1<'_, f64>>() {
+        return Ok(array.as_array().iter().copied().collect());
+    }
+    let seq = value
+        .cast::<PySequence>()
+        .map_err(|_| PyTypeError::new_err("dist must be a sequence of floats"))?;
+    let mut out = Vec::with_capacity(seq.len()?);
+    for i in 0..seq.len()? {
+        out.push(as_f64(&seq.get_item(i)?)?);
+    }
+    Ok(out)
+}
+
+fn camera_from_intrinsics(fx: f64, fy: f64, cx: f64, cy: f64, dist: &[f64]) -> PyResult<Camera> {
+    Camera::new(fx, fy, cx, cy, dist).map_err(pnp_error)
+}
+
+/// Parse a [`Camera`] from:
+/// - mapping `{fx, fy, cx, cy, dist?}`
+/// - OpenCV-style `(3, 3)` matrix (pinhole, no distortion)
+/// - mapping with column-major `m` (pinhole)
+fn parse_camera(value: &Bound<'_, PyAny>) -> PyResult<Camera> {
     if let Ok(array2) = value.extract::<PyReadonlyArray2<'_, f64>>() {
         let shape = array2.shape();
         if shape != [3, 3] {
             return Err(PyValueError::new_err(format!(
-                "camera_matrix must have shape (3, 3), got {:?}",
+                "camera as matrix must have shape (3, 3), got {:?}",
                 shape
             )));
         }
         let view = array2.as_array();
-        // Accept standard OpenCV row-major K = [[fx,0,cx],[0,fy,cy],[0,0,1]].
-        return Ok(Matrix3x3::camera_matrix(
-            view[[0, 0]],
-            view[[1, 1]],
-            view[[0, 2]],
-            view[[1, 2]],
-        ));
-    }
-
-    if let Ok(array1) = value.extract::<PyReadonlyArray1<'_, f64>>() {
-        let shape = array1.shape();
-        if shape != [9] {
-            return Err(PyValueError::new_err(format!(
-                "flat camera_matrix must have length 9 (column-major), got shape {:?}",
-                shape
-            )));
-        }
-        let view = array1.as_array();
-        let mut m = [0.0; 9];
-        for (i, value) in view.iter().enumerate() {
-            m[i] = *value;
-        }
-        return Ok(Matrix3x3::new(m));
-    }
-
-    if let Some(m_value) = mapping_get(value, "m")? {
-        let seq = m_value.cast::<PySequence>().map_err(|_| {
-            PyTypeError::new_err("camera_matrix['m'] must be a length-9 sequence (column-major)")
-        })?;
-        if seq.len()? != 9 {
-            return Err(PyValueError::new_err(format!(
-                "camera_matrix['m'] must have length 9, got {}",
-                seq.len()?
-            )));
-        }
-        let mut m = [0.0; 9];
-        for i in 0..9 {
-            m[i] = as_f64(&seq.get_item(i)?)?;
-        }
-        return Ok(Matrix3x3::new(m));
+        return camera_from_intrinsics(view[[0, 0]], view[[1, 1]], view[[0, 2]], view[[1, 2]], &[]);
     }
 
     if let (Some(fx), Some(fy), Some(cx), Some(cy)) = (
@@ -354,55 +337,101 @@ fn parse_camera_matrix(value: &Bound<'_, PyAny>) -> PyResult<Matrix3x3> {
         mapping_get(value, "cx")?,
         mapping_get(value, "cy")?,
     ) {
-        return Ok(Matrix3x3::camera_matrix(
+        let dist = match mapping_get(value, "dist")? {
+            Some(d) => parse_dist_coeffs(&d)?,
+            None => Vec::new(),
+        };
+        return camera_from_intrinsics(
             as_f64(&fx)?,
             as_f64(&fy)?,
             as_f64(&cx)?,
             as_f64(&cy)?,
-        ));
+            &dist,
+        );
+    }
+
+    if let Some(m_value) = mapping_get(value, "m")? {
+        let seq = m_value.cast::<PySequence>().map_err(|_| {
+            PyTypeError::new_err("camera['m'] must be a length-9 sequence (column-major)")
+        })?;
+        if seq.len()? != 9 {
+            return Err(PyValueError::new_err(format!(
+                "camera['m'] must have length 9, got {}",
+                seq.len()?
+            )));
+        }
+        let mut m = [0.0; 9];
+        for i in 0..9 {
+            m[i] = as_f64(&seq.get_item(i)?)?;
+        }
+        let matrix = Matrix3x3::new(m);
+        let dist = match mapping_get(value, "dist")? {
+            Some(d) => parse_dist_coeffs(&d)?,
+            None => Vec::new(),
+        };
+        return Camera::from_matrix(&matrix, &dist).map_err(pnp_error);
     }
 
     let seq = value.cast::<PySequence>().map_err(|_| {
         PyTypeError::new_err(
-            "camera_matrix must be a (3, 3) ndarray, length-9 column-major sequence, \
-             dict with 'm', or dict with fx/fy/cx/cy",
+            "camera must be a mapping with fx/fy/cx/cy[/dist], a (3, 3) matrix, or nested 3x3",
         )
     })?;
 
-    // Nested 3x3 sequence (row-major OpenCV K).
     if seq.len()? == 3 {
         let mut rows = [[0.0; 3]; 3];
         for r in 0..3 {
             let row = seq.get_item(r)?;
-            let row_seq = row.cast::<PySequence>().map_err(|_| {
-                PyTypeError::new_err("camera_matrix rows must be length-3 sequences")
-            })?;
+            let row_seq = row
+                .cast::<PySequence>()
+                .map_err(|_| PyTypeError::new_err("camera rows must be length-3 sequences"))?;
             if row_seq.len()? != 3 {
-                return Err(PyValueError::new_err(
-                    "camera_matrix rows must each have length 3",
-                ));
+                return Err(PyValueError::new_err("camera rows must each have length 3"));
             }
             for c in 0..3 {
                 rows[r][c] = as_f64(&row_seq.get_item(c)?)?;
             }
         }
-        return Ok(Matrix3x3::camera_matrix(
-            rows[0][0], rows[1][1], rows[0][2], rows[1][2],
-        ));
+        return camera_from_intrinsics(rows[0][0], rows[1][1], rows[0][2], rows[1][2], &[]);
     }
 
-    if seq.len()? == 9 {
-        let mut m = [0.0; 9];
-        for i in 0..9 {
-            m[i] = as_f64(&seq.get_item(i)?)?;
+    Err(PyValueError::new_err(
+        "unable to parse camera; expected {fx,fy,cx,cy,dist?} or (3,3) matrix",
+    ))
+}
+
+fn parse_pixels4(value: &Bound<'_, PyAny>) -> PyResult<[Vector2; 4]> {
+    if let Ok(array) = value.extract::<PyReadonlyArray2<'_, f64>>() {
+        let shape = array.shape();
+        if shape != [4, 2] {
+            return Err(PyValueError::new_err(format!(
+                "pixels must have shape (4, 2), got {:?}",
+                shape
+            )));
         }
-        return Ok(Matrix3x3::new(m));
+        let view = array.as_array();
+        return Ok([
+            Vector2::new(view[[0, 0]], view[[0, 1]]),
+            Vector2::new(view[[1, 0]], view[[1, 1]]),
+            Vector2::new(view[[2, 0]], view[[2, 1]]),
+            Vector2::new(view[[3, 0]], view[[3, 1]]),
+        ]);
     }
-
-    Err(PyValueError::new_err(format!(
-        "camera_matrix sequence must be nested 3x3 or flat length 9, got length {}",
-        seq.len()?
-    )))
+    let seq = value
+        .cast::<PySequence>()
+        .map_err(|_| PyTypeError::new_err("pixels must be a sequence of 4 points"))?;
+    if seq.len()? != 4 {
+        return Err(PyValueError::new_err(format!(
+            "expected exactly 4 pixels (TL, TR, BR, BL), got {}",
+            seq.len()?
+        )));
+    }
+    Ok([
+        parse_vector2(&seq.get_item(0)?)?,
+        parse_vector2(&seq.get_item(1)?)?,
+        parse_vector2(&seq.get_item(2)?)?,
+        parse_vector2(&seq.get_item(3)?)?,
+    ])
 }
 
 fn parse_ray(value: &Bound<'_, PyAny>) -> PyResult<Ray3> {
@@ -502,41 +531,39 @@ fn estimate_to_py<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (landmarks, observations, camera_matrix, method = "iterative"))]
+#[pyo3(signature = (landmarks, observations, camera, method = "iterative"))]
 fn solve_pnp<'py>(
     py: Python<'py>,
     landmarks: &Bound<'py, PyAny>,
     observations: &Bound<'py, PyAny>,
-    camera_matrix: &Bound<'py, PyAny>,
+    camera: &Bound<'py, PyAny>,
     method: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     let landmarks = parse_landmarks(landmarks)?;
     let observations = parse_observations(observations)?;
-    let camera_matrix = parse_camera_matrix(camera_matrix)?;
+    let camera = parse_camera(camera)?;
     let method = parse_method(method)?;
     let pose = py
-        .detach(move || core_solve_pnp(&landmarks, &observations, &camera_matrix, method))
+        .detach(move || core_solve_pnp(&landmarks, &observations, &camera, method))
         .map_err(pnp_error)?;
     pose_to_py(py, &pose)
 }
 
 #[pyfunction]
-#[pyo3(signature = (landmarks, observations, camera_matrix, method = "iterative"))]
+#[pyo3(signature = (landmarks, observations, camera, method = "iterative"))]
 fn solve_pnp_camera_pose<'py>(
     py: Python<'py>,
     landmarks: &Bound<'py, PyAny>,
     observations: &Bound<'py, PyAny>,
-    camera_matrix: &Bound<'py, PyAny>,
+    camera: &Bound<'py, PyAny>,
     method: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     let landmarks = parse_landmarks(landmarks)?;
     let observations = parse_observations(observations)?;
-    let camera_matrix = parse_camera_matrix(camera_matrix)?;
+    let camera = parse_camera(camera)?;
     let method = parse_method(method)?;
     let pose = py
-        .detach(move || {
-            core_solve_pnp_camera_pose(&landmarks, &observations, &camera_matrix, method)
-        })
+        .detach(move || core_solve_pnp_camera_pose(&landmarks, &observations, &camera, method))
         .map_err(pnp_error)?;
     pose_to_py(py, &pose)
 }
@@ -569,6 +596,26 @@ fn estimate_square_pose_from_rays<'py>(
     estimate_to_py(py, &estimate)
 }
 
+#[pyfunction]
+fn estimate_square_pose_from_pixels<'py>(
+    py: Python<'py>,
+    pixels: &Bound<'py, PyAny>,
+    physical_size: f64,
+    camera: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    if !physical_size.is_finite() || physical_size <= 0.0 {
+        return Err(PyValueError::new_err(
+            "physical_size must be a finite positive number",
+        ));
+    }
+    let pixels = parse_pixels4(pixels)?;
+    let camera = parse_camera(camera)?;
+    let estimate = py
+        .detach(move || core_estimate_square_pose_from_pixels(pixels, physical_size, &camera))
+        .map_err(pnp_error)?;
+    estimate_to_py(py, &estimate)
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", VERSION)?;
@@ -576,5 +623,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(solve_pnp_camera_pose, module)?)?;
     module.add_function(wrap_pyfunction!(camera_pose_from_solve_pnp_pose, module)?)?;
     module.add_function(wrap_pyfunction!(estimate_square_pose_from_rays, module)?)?;
+    module.add_function(wrap_pyfunction!(estimate_square_pose_from_pixels, module)?)?;
     Ok(())
 }

@@ -24,6 +24,14 @@ class Pose(TypedDict):
     position: Vector3
     rotation: Quaternion
 
+class Camera(TypedDict, total=False):
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    dist: Sequence[float] | NDArray[np.float64]
+    m: Sequence[float]
+
 class Landmark(TypedDict, total=False):
     id: str
     position: Vector3 | Sequence[float] | NDArray[np.float64]
@@ -47,14 +55,14 @@ __version__: str
 def solve_pnp(
     landmarks: Sequence[Landmark] | ArrayLike,
     observations: Sequence[LandmarkObservation] | ArrayLike,
-    camera_matrix: ArrayLike | Mapping[str, Any],
+    camera: Camera | ArrayLike | Mapping[str, Any],
     method: Method = ...,
 ) -> Pose: ...
 
 def solve_pnp_camera_pose(
     landmarks: Sequence[Landmark] | ArrayLike,
     observations: Sequence[LandmarkObservation] | ArrayLike,
-    camera_matrix: ArrayLike | Mapping[str, Any],
+    camera: Camera | ArrayLike | Mapping[str, Any],
     method: Method = ...,
 ) -> Pose: ...
 
@@ -63,4 +71,10 @@ def camera_pose_from_solve_pnp_pose(pose: Pose | Mapping[str, Any]) -> Pose: ...
 def estimate_square_pose_from_rays(
     rays: Sequence[Ray] | ArrayLike,
     physical_size: float,
+) -> SquarePoseEstimate: ...
+
+def estimate_square_pose_from_pixels(
+    pixels: Sequence[Vector2 | Sequence[float]] | ArrayLike,
+    physical_size: float,
+    camera: Camera | ArrayLike | Mapping[str, Any],
 ) -> SquarePoseEstimate: ...

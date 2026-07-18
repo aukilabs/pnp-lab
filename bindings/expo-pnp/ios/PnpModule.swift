@@ -9,13 +9,13 @@ public class PnpModule: Module {
       (
         landmarks: [[String: Any]],
         observations: [[String: Any]],
-        cameraMatrix: [String: Any],
+        camera: [String: Any],
         method: String
       ) throws -> [String: Any] in
       try self.solvePnpCameraPose(
         landmarks: landmarks,
         observations: observations,
-        cameraMatrix: cameraMatrix,
+        camera: camera,
         method: method
       )
     }
@@ -28,11 +28,11 @@ public class PnpModule: Module {
   private func solvePnpCameraPose(
     landmarks: [[String: Any]],
     observations: [[String: Any]],
-    cameraMatrix: [String: Any],
+    camera: [String: Any],
     method: String
   ) throws -> [String: Any] {
     let nativeMethod = try self.method(from: method)
-    let nativeCameraMatrix = try self.makeMatrix(cameraMatrix)
+    let nativeCamera = try self.makeCamera(camera)
     let nativeLandmarks = try landmarks.map { item in
       try self.makeLandmark(item)
     }
@@ -44,7 +44,7 @@ public class PnpModule: Module {
       let pose = try PnpNative.solveCameraPose(
         landmarks: nativeLandmarks,
         observations: nativeObservations,
-        cameraMatrix: nativeCameraMatrix,
+        camera: nativeCamera,
         method: nativeMethod
       )
       return poseToRecord(pose)
@@ -88,18 +88,21 @@ public class PnpModule: Module {
     )
   }
 
-  private func makeMatrix(_ value: [String: Any]) throws -> PnpNative.Matrix3x3 {
-    guard let rawValues = value["m"] as? [Any], rawValues.count == 9 else {
-      throw PnpInvalidInputException("cameraMatrix.m must contain exactly 9 numbers")
-    }
+  private func makeCamera(_ value: [String: Any]) throws -> PnpNative.Camera {
+    let fx = try double(value["fx"], label: "camera.fx")
+    let fy = try double(value["fy"], label: "camera.fy")
+    let cx = try double(value["cx"], label: "camera.cx")
+    let cy = try double(value["cy"], label: "camera.cy")
 
-    var values = [Double](repeating: 0, count: 9)
-    for index in 0..<9 {
-      values[index] = try double(rawValues[index], label: "cameraMatrix.m[\(index)]")
+    var dist: [Double] = []
+    if let rawDist = value["dist"] as? [Any] {
+      dist = try rawDist.enumerated().map { index, item in
+        try double(item, label: "camera.dist[\(index)]")
+      }
     }
 
     do {
-      return try PnpNative.Matrix3x3(m: values)
+      return try PnpNative.Camera(fx: fx, fy: fy, cx: cx, cy: cy, dist: dist)
     } catch let error as PnpNative.PnpError {
       throw mapPnpError(error)
     }

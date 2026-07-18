@@ -1,5 +1,17 @@
+//! Planar square-marker pose from four corner rays or image pixels.
+//!
+//! Recover a rigid pose of a known square (e.g. a QR code or printed marker)
+//! from either:
+//!
+//! - four world-space (or tracking-space) rays through the corners, or
+//! - four image pixels plus a [`Camera`] (undistort + OpenGL unprojection).
+//!
+//! Corner order is always **top-left, top-right, bottom-right, bottom-left**.
+
+use crate::camera::Camera;
 use crate::types::{
-    rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Ray3, SquarePoseEstimate, Vector3,
+    rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Ray3, SquarePoseEstimate, Vector2,
+    Vector3,
 };
 
 const DISTANCE_COUNT: usize = 4;
@@ -10,9 +22,48 @@ const MAX_ITERATIONS: usize = 80;
 const MAX_DISTANCE_MULTIPLIER: f64 = 10_000.0;
 const SUCCESS_RESIDUAL_RMS: f64 = 0.05;
 
-/// Estimate an Ark square pose from world-space rays to its four corners.
+/// Estimate square pose from four **image corner pixels** and a camera model.
 ///
-/// The expected corner order is top-left, top-right, bottom-right, bottom-left.
+/// # Arguments
+///
+/// - `corner_pixels`: TL, TR, BR, BL in distorted OpenCV image coordinates
+/// - `physical_size`: side length of the square in the same units as ray space
+///   (typically meters)
+/// - `camera`: used to undistort and form OpenGL-style rays via
+///   [`Camera::unproject_opengl_ray`]
+///
+/// Rays are assumed to originate at the camera origin in camera space.
+pub fn estimate_square_pose_from_pixels(
+    corner_pixels: [Vector2; 4],
+    physical_size: f64,
+    camera: &Camera,
+) -> Result<SquarePoseEstimate, PnpError> {
+    let rays = [
+        camera.unproject_opengl_ray(corner_pixels[0]),
+        camera.unproject_opengl_ray(corner_pixels[1]),
+        camera.unproject_opengl_ray(corner_pixels[2]),
+        camera.unproject_opengl_ray(corner_pixels[3]),
+    ];
+    estimate_square_pose_from_rays(rays, physical_size)
+}
+
+/// Estimate square pose from four **world- or tracking-space rays**.
+///
+/// # Arguments
+///
+/// - `rays`: TL, TR, BR, BL. Origins and directions may be unnormalized;
+///   directions are normalized internally. Units must match `physical_size`.
+/// - `physical_size`: square side length (same unit as ray origins/directions)
+///
+/// # Returns
+///
+/// [`SquarePoseEstimate`] with pose in the ray coordinate frame, a confidence
+/// score in \[0, 1\], residual error, and optimized positive ray distances.
+///
+/// # Errors
+///
+/// [`PnpError::SolverFailed`] for non-positive size, degenerate geometry, or
+/// residual above the success threshold.
 pub fn estimate_square_pose_from_rays(
     rays: [Ray3; 4],
     physical_size: f64,

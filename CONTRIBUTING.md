@@ -1,211 +1,195 @@
-# Contributing
+# Contributing to PnPKit
 
-Thank you for considering contributing to the PnP pose estimator.
+Thank you for helping improve PnPKit. This guide covers repository setup,
+development workflow, and pull-request expectations.
 
-## Getting Started
+## Before you start
 
-### 1. Clone the repository
+- Search the [issue tracker](https://github.com/aukilabs/pnpkit/issues) before
+  filing a duplicate bug or feature request.
+- For large features, public API changes, new dependencies, or solver redesigns,
+  open an issue first so the approach can be agreed before substantial
+  implementation work.
+- Keep changes focused. Unrelated refactors make numerical regressions harder
+  to review.
+
+## Development setup
+
+### Required for the core workspace
+
+| Tool | Notes |
+|------|--------|
+| Git | — |
+| [Rust](https://rustup.rs/) (stable) | See `rust-toolchain.toml` |
+| [`just`](https://just.systems/) | Recommended for multi-target recipes |
+| [cbindgen](https://github.com/mozilla/cbindgen) | C header generation for `pnp-ffi` |
+
+Clone and verify:
 
 ```bash
-git clone git@github.com:aukilabs/pnpkit.git
+git clone https://github.com/aukilabs/pnpkit.git
 cd pnpkit
-```
-
-### 2. Install required tools
-
-These are needed for core development (building, testing, generating the C header):
-
-| Tool | Install | Used for |
-|------|---------|----------|
-| [Rust](https://rustup.rs/) 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | Compiler toolchain |
-| [just](https://github.com/casey/just) | `cargo install just` | Task runner |
-| [cbindgen](https://github.com/mozilla/cbindgen) | `cargo install cbindgen` | C header generation for pnp-ffi |
-
-### 3. Install cross-compilation targets
-
-Only install the targets you need. None are required for core development and tests.
-
-**iOS:**
-
-```bash
-rustup target add aarch64-apple-ios        # devices
-rustup target add aarch64-apple-ios-sim    # simulator
-```
-
-**Android** (requires the Android NDK, see below):
-
-```bash
-rustup target add aarch64-linux-android    # arm64-v8a (devices)
-rustup target add x86_64-linux-android     # x86_64 (emulator)
-```
-
-**WASM:**
-
-```bash
-rustup target add wasm32-wasip2
-cargo install cargo-component              # WASM Component Model builder
-```
-
-### 4. Android NDK setup
-
-Android builds require the [Android NDK](https://developer.android.com/ndk) for the cross-linker. Install it through one of:
-
-- **Android Studio**: SDK Manager > SDK Tools > check "NDK (Side by side)" > Apply
-- **Command line**: `sdkmanager --install "ndk;27.1.12297006"` (or latest)
-
-The build recipes auto-detect the NDK from `ANDROID_NDK_HOME` or the default Android Studio path (`~/Library/Android/sdk/ndk/<version>`). To use a non-standard location, export `ANDROID_NDK_HOME`:
-
-```bash
-export ANDROID_NDK_HOME=/path/to/your/ndk
-```
-
-Android builds target API level 24 (Android 7.0) by default.
-
-### 5. Optional tools
-
-| Tool | Install | Used for |
-|------|---------|----------|
-| [jco](https://github.com/nicknisi/jco) | `npm install -g @bytecodealliance/jco` | Transpile WASM component to browser JS |
-| Python 3.9+ | System or `brew install python` | Regenerating reference data; Python bindings |
-| [uv](https://github.com/astral-sh/uv) or Maturin | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | Build/test `bindings/python` |
-| [opencv-python](https://pypi.org/project/opencv-python/) | `pip install opencv-python numpy` | Used by the reference data generator |
-
-### 6. Verify your setup
-
-```bash
-just setup
-```
-
-This runs an idempotent check of all required and optional tools, Rust targets, and the Android NDK. It will tell you exactly what's missing and how to install it.
-
-### 7. Run the test suite
-
-```bash
+just setup          # or: cargo test --workspace --locked
 just test
 ```
 
-## Development Workflow
+HTTPS is preferred for public contributors; SSH works if you already use it
+with GitHub.
 
-### Running Tests
+### Optional tooling by area
 
-```bash
-just test              # All tests across the workspace
-just test-core         # pnp-core unit tests only
-just test-integration  # Integration tests against OpenCV reference data
-just test-ffi          # C FFI binding tests
-just python-test       # Isolated Python wheel + pytest suite
-just check-nostd       # Verify no_std compatibility
-just check-all         # Tests + no_std + clippy
-```
+Install only what you need for the code you touch:
 
-### Building
+| Area | Tools |
+|------|--------|
+| Python bindings | Python 3.9+, [uv](https://github.com/astral-sh/uv) or Maturin |
+| Android natives | Android NDK, Rust targets `aarch64-linux-android`, `x86_64-linux-android` |
+| iOS natives | macOS, Xcode, `aarch64-apple-ios`, `aarch64-apple-ios-sim` |
+| WASM | `wasm32-wasip2`, `cargo-component` (and `jco` for JS transpile) |
+| Reference data | `opencv-python`, `numpy` |
 
-```bash
-just build              # Debug build (all crates)
-just build-release      # Release build (all crates)
-```
-
-**Platform-specific FFI builds:**
+Android NDK is auto-detected from `ANDROID_NDK_HOME` / `ANDROID_NDK_ROOT` or
+the default Android Studio NDK path. Builds target API 24 by default.
 
 ```bash
-just build-ffi            # macOS (host)
-just build-ios            # iOS device (aarch64)
-just build-ios-sim        # iOS Simulator (aarch64)
-just build-android        # Android arm64 + x86_64
-just build-android-arm64  # Android arm64 only
-just build-android-x86_64 # Android x86_64 only (emulator)
+# iOS
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+# Android
+rustup target add aarch64-linux-android x86_64-linux-android
+
+# WASM
+rustup target add wasm32-wasip2
+cargo install cargo-component
 ```
 
-**WASM builds:**
+## Making changes
 
-```bash
-just build-wasm           # Debug
-just build-wasm-release   # Release
-just transpile            # Release + transpile to browser JS
-```
+### Module boundaries
 
-### Reference Data
+- **`pnp-core`**: pure solvers and types. Must stay `no_std` + `alloc` (use
+  `libm` for math, not `std`).
+- **`pnp-ffi`**: `#[repr(C)]` types and `extern "C"` entry points only; no
+  heavy logic beyond conversion.
+- **`pnp-wasm`**: WIT world + thin conversion to core.
+- **`bindings/python`**: PyO3 facade; prefer validating shapes in Python and
+  keeping solvers in Rust.
+- **`bindings/expo-pnp`**: TypeScript API + platform glue; natives are built
+  with `just expo-native`.
 
-The test suite validates against OpenCV `cv::solvePnP` reference output stored in `tests/reference_vectors/`. To regenerate:
+### Style and documentation
+
+- Format with `cargo fmt --all`.
+- Document every **public** Rust item (`///` rustdoc). Module-level `//!`
+  comments should describe purpose, conventions, and references.
+- Prefer clear names and short functions over cleverness.
+- Do not commit generated build output (`target/`, wheels, `node_modules/`,
+  etc.). `.gitignore` covers the common cases.
+
+### Tests
+
+- Every bug fix or feature should include tests.
+- Unit tests live next to the code (`#[cfg(test)] mod tests`).
+- OpenCV cross-checks live in `crates/pnp-core/tests/integration.rs` and
+  `tests/reference_vectors/`.
+- When changing numerics, keep tolerances consistent with the table below.
+
+| Metric | Typical tolerance |
+|--------|-------------------|
+| Position | &lt; 1e-3 |
+| Rotation | &lt; 1e-3 rad (stricter where possible) |
+| Reprojection | &lt; 1.0 px |
+
+Regenerate OpenCV reference vectors only when intentionally expanding the
+suite:
 
 ```bash
 pip install opencv-python numpy
 just generate-reference
 ```
 
-## Project Structure
+## Checks to run
 
-```
-.cargo/
-  config.toml           Android cross-compilation notes
-crates/
-  pnp-core/             Core solver library (no_std + alloc)
-    src/
-      types.rs           Data types (Vector2/3, Quaternion, Matrix3x3, Pose, etc.)
-      rodrigues.rs       Rodrigues rotation vector <-> matrix conversion
-      pose_tools.rs      OpenCV/OpenGL coordinate conversion, pose inversion
-      solve.rs           Top-level API and method dispatch
-      epnp.rs            EPnP solver (coplanar/non-coplanar)
-      iterative.rs       Levenberg-Marquardt refinement
-      sqpnp.rs           SQPnP solver
-    tests/
-      integration.rs     Integration tests against OpenCV reference
-  pnp-wasm/              WASM Component Model guest
-    wit/pnp.wit          WIT interface definition
-    src/lib.rs           Type conversion + solver delegation
-  pnp-ffi/               C FFI layer
-    src/lib.rs           #[repr(C)] types + extern "C" functions
-    include/pnp.h        Auto-generated C header (cbindgen)
-    cbindgen.toml        cbindgen configuration
-bindings/
-  python/                aukilabs-pnpkit Maturin/PyO3 package
-  expo-pnp/              Expo module + prebuilt Android/iOS natives
-tests/
-  generate_reference.py  OpenCV reference data generator
-  reference_vectors/     JSON reference output
+Minimum for core Rust changes (matches CI):
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --locked --exclude pnpkit-python
+cargo check -p pnp-core --no-default-features --locked
 ```
 
-## Guidelines
+GitHub Actions (`.github/workflows/ci.yml`) runs those checks plus clippy and
+the Python suite on every push and pull request.
 
-### Code Style
+Broader recipes:
 
-- Follow standard `rustfmt` formatting (`cargo fmt`).
-- The core crate (`pnp-core`) must remain `no_std` compatible. Use `alloc` for heap allocations, `libm` for math functions.
-- All public APIs need doc comments.
+```bash
+just check-all            # tests + no_std + clippy
+just test-core            # pnp-core unit tests only
+just test-integration     # OpenCV reference integration tests
+just test-ffi             # C FFI tests
+just python-test          # isolated Python wheel + pytest
+just build-wasm-release   # WASM component (if you touch pnp-wasm / WIT)
+```
 
-### Testing
+Platform-specific:
 
-- Every new feature or bug fix must include tests.
-- Unit tests go in the same file as the code (`#[cfg(test)] mod tests`).
-- Integration tests that require reference data go in `crates/pnp-core/tests/`.
-- Use the existing reference test vectors where applicable. If a new test case is needed, add it to `tests/generate_reference.py` and regenerate.
+```bash
+just build-ffi            # host C library
+just expo-android         # Android .so → bindings/expo-pnp
+just expo-ios             # XCFramework → bindings/expo-pnp
+just expo-native          # both
+```
 
-### Tolerances
+After changing the C API, rebuild the header:
 
-When comparing against reference data:
+```bash
+just generate-header
+# or: cargo build -p pnp-ffi
+```
 
-| Metric | Tolerance |
-|--------|-----------|
-| Position | < 1e-3 (1 mm) |
-| Rotation | < 1e-4 rad (~0.006 deg) |
-| Reprojection error | < 1.0 pixel |
+## Pull requests
 
-### Adding a New Solver
+1. Branch from `develop` (or the repo’s default development branch).
+2. Keep the PR focused; split unrelated work.
+3. Update [CHANGELOG.md](CHANGELOG.md) under **Unreleased** for user-visible
+   changes (API, solvers, bindings, breaking changes).
+4. Ensure the checks above pass for the areas you touched.
+5. Write a clear PR description: problem, approach, how to test.
 
-1. Create `crates/pnp-core/src/<solver>.rs`
-2. Add `pub mod <solver>;` to `lib.rs`
-3. Add a variant to `SolvePnpMethod` in `types.rs`
-4. Wire the dispatch in `solve.rs`
-5. Add tests that validate against known poses and reference data
-6. Update the WIT interface if the method enum changes
-7. Update FFI types and regenerate the C header
+### Commit messages
 
-### Commits
+- Prefer imperative mood: “Add Camera distortion support”.
+- Explain *why* when the *what* is not obvious from the diff.
+- One logical change per commit when practical.
 
-- Write clear, descriptive commit messages.
-- Keep commits focused on a single change.
-- Run `just test` before pushing.
+## Adding a new solver method
+
+1. Implement `crates/pnp-core/src/<solver>.rs`.
+2. Export the module from `lib.rs`.
+3. Add a `SolvePnpMethod` variant in `types.rs`.
+4. Dispatch from `solve.rs`.
+5. Add unit tests and, if possible, OpenCV reference coverage.
+6. Update FFI enums, regenerate `pnp.h`, and update WIT / language bindings.
+
+## Coordinate and camera conventions
+
+Document any deviation in the PR. Defaults:
+
+- Image pixels: OpenCV (origin top-left, +Y down).
+- `solve_pnp` returns **OpenGL** object pose.
+- Distortion coeffs: OpenCV order; empty `dist` means ideal pinhole.
+- Square corners: TL → TR → BR → BL.
+
+## Security and safety
+
+- C FFI functions must document `# Safety` requirements (null pointers, buffer
+  lengths, string lifetimes).
+- Do not introduce `unsafe` in `pnp-core` without strong justification and
+  review.
+- Never commit secrets, credentials, or large private datasets.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions are licensed under the
+[MIT License](LICENSE).

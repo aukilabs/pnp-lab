@@ -1,20 +1,26 @@
 # PnPKit bindings
 
-This directory contains the publishable language and framework integrations
-built on the PnPKit Rust crates:
+Publishable language and framework integrations built on the Rust crates:
 
-- [`python/`](python/) — Maturin/PyO3 package `aukilabs-pnpkit` (imports as
-  `auki_pnpkit`) with NumPy-friendly PnP and square-pose APIs.
-- [`expo-pnp/`](expo-pnp/) — the Expo module, prebuilt Android libraries, iOS
-  XCFramework, and TypeScript API.
+| Package | Path | Notes |
+|---------|------|--------|
+| Python / NumPy | [`python/`](python/) | PyPI name `aukilabs-pnpkit`, import `auki_pnpkit` |
+| Expo / React Native | [`expo-pnp/`](expo-pnp/) | TypeScript API + prebuilt Android/iOS natives |
 
-Build artifacts are written into their corresponding binding package:
+Low-level C and WASM APIs live under `crates/pnp-ffi` and `crates/pnp-wasm`
+rather than this directory.
+
+## Build artifacts
 
 | Command | Output |
-|---|---|
+|---------|--------|
 | `just python-build` | `bindings/python/dist/` |
 | `just expo-android` | `bindings/expo-pnp/android/src/main/jniLibs/` |
 | `just expo-ios` | `bindings/expo-pnp/ios/PnpRust.xcframework/` |
+| `just expo-native` | Both mobile targets |
 
-Run `just test`, `just python-test`, and `just ffi-test` for workspace checks
-that do not launch an example application.
+Workspace checks that do not launch an app: `just test`, `just python-test`,
+`just ffi-test`.
+
+See the [root README](../README.md) for getting started and
+[CONTRIBUTING.md](../CONTRIBUTING.md) for development workflow.
