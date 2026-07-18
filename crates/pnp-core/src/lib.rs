@@ -16,8 +16,9 @@
 //!   ([`estimate_square_pose_from_rays`], [`estimate_square_pose_from_pixels`],
 //!   [`estimate_square_pose_from_stereo_pixels`])
 //! - Multi-view monocular calibration (Zhang init + joint BA)
-//!   ([`calibrate_camera`], [`CalibrateOptions`], [`CalibrationView`],
-//!   [`CalibrationResult`], [`square_object_points`])
+//!   ([`calibrate_camera`], [`calibrate_from_square_views`],
+//!   [`CalibrateOptions`], [`CalibrationView`], [`CalibrationResult`],
+//!   [`square_object_points`])
 //! - Calibrated monocular [`Camera`] with optional Brown–Conrady distortion
 //!
 //! ## Coordinate conventions
@@ -84,7 +85,8 @@ pub mod types;
 
 pub use absolute_orientation::absolute_orientation;
 pub use calibrate::{
-    calibrate_camera, square_object_points, CalibrateOptions, CalibrationResult, CalibrationView,
+    calibrate_camera, calibrate_from_square_views, square_object_points, CalibrateOptions,
+    CalibrationResult, CalibrationView,
 };
 pub use camera::Camera;
 pub use multiview::{CameraView, MultiViewObservation, MultiViewRig};

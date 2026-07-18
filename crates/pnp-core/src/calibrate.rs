@@ -1,8 +1,9 @@
 //! Multi-view monocular camera calibration: Zhang-style init + joint BA.
 //!
-//! Public entry point: [`calibrate_camera`]. Internals cover validation, square
-//! planar object points, planar homography DLT, Zhang initial intrinsics,
-//! BA parameter packing / RMS, and joint Levenberg–Marquardt refinement.
+//! Public entry points: [`calibrate_camera`], [`calibrate_from_square_views`].
+//! Internals cover validation, square planar object points, planar homography
+//! DLT, Zhang initial intrinsics, BA parameter packing / RMS, and joint
+//! Levenberg–Marquardt refinement.
 //!
 //! # Pipeline ([`calibrate_camera`])
 //!
@@ -1302,6 +1303,36 @@ pub fn calibrate_camera(
     })
 }
 
+/// Convenience: calibrate from multiple views of a square marker (QR / planar quad).
+///
+/// Builds shared object points via [`square_object_points`] (`physical_size` side
+/// length, TL→TR→BR→BL) and runs [`calibrate_camera`]. Each entry of
+/// `corners_per_view` is four image corners in the same order.
+///
+/// # Errors
+///
+/// - [`PnpError::SolverFailed`] if `physical_size` is non-finite or ≤ 0  
+/// - Propagates all [`calibrate_camera`] errors otherwise
+pub fn calibrate_from_square_views(
+    corners_per_view: &[[Vector2; 4]],
+    physical_size: f64,
+    image_width: u32,
+    image_height: u32,
+    options: &CalibrateOptions,
+) -> Result<CalibrationResult, PnpError> {
+    if !physical_size.is_finite() || physical_size <= 0.0 {
+        return Err(PnpError::SolverFailed);
+    }
+    let object = square_object_points(physical_size)?;
+    let views: Vec<CalibrationView> = corners_per_view
+        .iter()
+        .map(|c| CalibrationView {
+            image_points: c.to_vec(),
+        })
+        .collect();
+    calibrate_camera(&object, &views, image_width, image_height, options)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2291,5 +2322,190 @@ mod tests {
             cam_est.dist[0],
             dist_true[0]
         );
+    }
+
+    #[test]
+    fn calibrate_from_square_views_noise_free() {
+        // Noise-free pinhole recovery via the square convenience API.
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let cam_true = Camera::pinhole(fx_true, fy_true, cx_true, cy_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let physical_size = 0.2;
+        let object = square_object_points(physical_size).unwrap();
+
+        let true_poses: [CvRvecTvec; 10] = [
+            ([0.15, -0.10, 0.05], NaVector3::new(0.02, -0.01, 0.55)),
+            ([-0.20, 0.18, -0.08], NaVector3::new(-0.03, 0.02, 0.62)),
+            ([0.10, 0.25, 0.12], NaVector3::new(0.01, 0.0, 0.48)),
+            ([0.30, -0.05, -0.15], NaVector3::new(-0.02, 0.03, 0.70)),
+            ([-0.12, -0.22, 0.08], NaVector3::new(0.04, -0.02, 0.58)),
+            ([0.05, 0.12, -0.20], NaVector3::new(0.0, 0.01, 0.52)),
+            ([0.28, 0.15, 0.10], NaVector3::new(-0.01, 0.02, 0.60)),
+            ([-0.25, -0.15, -0.05], NaVector3::new(0.03, -0.01, 0.65)),
+            ([0.18, -0.28, 0.15], NaVector3::new(-0.02, 0.0, 0.50)),
+            ([-0.08, 0.30, -0.12], NaVector3::new(0.01, 0.03, 0.57)),
+        ];
+
+        let mut corners_per_view: Vec<[Vector2; 4]> = Vec::with_capacity(true_poses.len());
+        for (rvec, tvec) in &true_poses {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut corners = [Vector2::new(0.0, 0.0); 4];
+            for (i, p) in object.iter().enumerate() {
+                let pc = r * p.to_na() + tvec;
+                corners[i] = cam_true
+                    .project(Vector3::from_na(&pc))
+                    .expect("in front of camera");
+            }
+            corners_per_view.push(corners);
+        }
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 0,
+            max_iterations: 100,
+            function_tolerance: 1e-12,
+            rms_success_threshold: None,
+        };
+
+        let result = calibrate_from_square_views(
+            &corners_per_view,
+            physical_size,
+            image_width,
+            image_height,
+            &opts,
+        )
+        .expect("calibrate_from_square_views should succeed");
+
+        assert_eq!(result.views_used, true_poses.len());
+        assert_eq!(result.object_poses.len(), true_poses.len());
+        assert_eq!(result.per_view_rms.len(), true_poses.len());
+        assert!(
+            result.rms_reprojection_error < 1e-2,
+            "RMS={}",
+            result.rms_reprojection_error
+        );
+        for (i, r) in result.per_view_rms.iter().enumerate() {
+            assert!(*r < 1e-2, "view {i} RMS={r}");
+        }
+
+        let fx_rel = (result.camera.fx - fx_true).abs() / fx_true;
+        let fy_rel = (result.camera.fy - fy_true).abs() / fy_true;
+        assert!(
+            fx_rel < 1e-3,
+            "fx rel err={fx_rel} (est={}, true={fx_true})",
+            result.camera.fx
+        );
+        assert!(
+            fy_rel < 1e-3,
+            "fy rel err={fy_rel} (est={}, true={fy_true})",
+            result.camera.fy
+        );
+        assert!(
+            (result.camera.cx - cx_true).abs() < 0.5,
+            "cx err={}",
+            (result.camera.cx - cx_true).abs()
+        );
+        assert!(
+            (result.camera.cy - cy_true).abs() < 0.5,
+            "cy err={}",
+            (result.camera.cy - cy_true).abs()
+        );
+        assert!(result.camera.dist.is_empty());
+        assert!((result.camera.fx - result.camera.fy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn calibrate_from_square_views_rejects_bad_size() {
+        assert!(
+            calibrate_from_square_views(&[], 0.0, 640, 480, &CalibrateOptions::default()).is_err()
+        );
+        assert!(
+            calibrate_from_square_views(&[], -0.1, 640, 480, &CalibrateOptions::default()).is_err()
+        );
+        assert!(
+            calibrate_from_square_views(&[], f64::NAN, 640, 480, &CalibrateOptions::default())
+                .is_err()
+        );
+        assert!(calibrate_from_square_views(
+            &[],
+            f64::INFINITY,
+            640,
+            480,
+            &CalibrateOptions::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn calibrate_rejects_identical_poses_cleanly() {
+        // All views share one pose — degenerate for Zhang; must not panic.
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let cam_true = Camera::pinhole(fx_true, fy_true, cx_true, cy_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let physical_size = 0.2;
+        let object = square_object_points(physical_size).unwrap();
+
+        let rvec = [0.15, -0.10, 0.05];
+        let tvec = NaVector3::new(0.02, -0.01, 0.55);
+        let r = rodrigues::rvec_to_rotation_matrix(&rvec).to_na();
+        let mut corners = [Vector2::new(0.0, 0.0); 4];
+        for (i, p) in object.iter().enumerate() {
+            let pc = r * p.to_na() + tvec;
+            corners[i] = cam_true
+                .project(Vector3::from_na(&pc))
+                .expect("in front of camera");
+        }
+
+        let corners_per_view = [corners; 5];
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 0,
+            max_iterations: 50,
+            function_tolerance: 1e-12,
+            // Fail if the degenerate solution only achieves a high RMS.
+            rms_success_threshold: Some(1e-2),
+            ..Default::default()
+        };
+
+        // Either a clean PnpError or (if accepted) would need low RMS — with
+        // identical poses Zhang is singular / inconsistent, so Err is expected.
+        // In all cases we must not panic.
+        match calibrate_from_square_views(
+            &corners_per_view,
+            physical_size,
+            image_width,
+            image_height,
+            &opts,
+        ) {
+            Err(PnpError::SolverFailed) | Err(PnpError::InsufficientPoints) => {}
+            Err(e) => {
+                // Other PnpError variants are also acceptable (clean failure).
+                let _ = e;
+            }
+            Ok(result) => {
+                // If somehow accepted, RMS must still be under the threshold
+                // (pipeline already enforced rms_success_threshold).
+                assert!(
+                    result.rms_reprojection_error < 1e-2,
+                    "unexpected success with high RMS={}",
+                    result.rms_reprojection_error
+                );
+            }
+        }
     }
 }
