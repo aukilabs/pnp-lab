@@ -33,13 +33,13 @@ jobs:
 
       - name: Test workspace
         # Python bindings are built/tested in the python job (maturin + pytest).
-        run: cargo test --workspace --locked --exclude pnpkit-python
+        run: cargo test --workspace --locked --exclude pnplab-python
 
       - name: Check no_std (pnp-core)
         run: cargo check -p pnp-core --no-default-features --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --locked --exclude pnpkit-python -- -D clippy::not_unsafe_ptr_arg_deref
+        run: cargo clippy --workspace --locked --exclude pnplab-python -- -D clippy::not_unsafe_ptr_arg_deref
 
   python:
     name: Python

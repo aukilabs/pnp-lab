@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(peyote_pnp_jni)
+project(pnp_jni)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,4 +19,4 @@ target_link_directories(pnp_jni PRIVATE
 )
 
 find_library(log-lib log)
-target_link_libraries(pnp_jni peyote_pnp_ffi ${log-lib})
+target_link_libraries(pnp_jni pnp_ffi ${log-lib})

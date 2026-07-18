@@ -467,7 +467,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pnpkit-python"
+name = "pnplab-python"
 version = "0.1.0"
 dependencies = [
  "numpy",

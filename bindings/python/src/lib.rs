@@ -1,4 +1,4 @@
-//! Native Python/NumPy bindings for PnPKit.
+//! Native Python/NumPy bindings for PnPLab.
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pnp_core::{

@@ -6,7 +6,7 @@ license.workspace = true
 description = "C FFI bindings for PnP pose estimation"
 
 [lib]
-name = "peyote_pnp_ffi"
+name = "pnp_ffi"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]

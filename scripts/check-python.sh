@@ -20,7 +20,7 @@ else
   exit 1
 fi
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/pnpkit-python.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/pnplab-python.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 uv venv --quiet --system-site-packages --python "${PYTHON:-python3}" "$TMP/venv"

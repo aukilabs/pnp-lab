@@ -1,4 +1,4 @@
-"""Multi-view monocular camera calibration tests for auki_pnpkit."""
+"""Multi-view monocular camera calibration tests for auki_pnplab."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-import auki_pnpkit
+import auki_pnplab
 
 
 def _rodrigues(rvec: np.ndarray) -> np.ndarray:
@@ -93,7 +93,7 @@ def test_calibrate_from_square_views_noise_free():
         fx=fx_true, fy=fy_true, cx=cx_true, cy=cy_true, physical_size=physical_size
     )
 
-    result = auki_pnpkit.calibrate_from_square_views(
+    result = auki_pnplab.calibrate_from_square_views(
         corners,
         physical_size=physical_size,
         image_size=(640, 480),
@@ -127,7 +127,7 @@ def test_calibrate_from_square_views_noise_free():
 
 def test_calibrate_from_square_views_image_width_height():
     corners = _synthetic_square_corners()
-    result = auki_pnpkit.calibrate_from_square_views(
+    result = auki_pnplab.calibrate_from_square_views(
         corners,
         physical_size=0.2,
         image_width=640,
@@ -144,7 +144,7 @@ def test_calibrate_from_square_views_sequence_input():
     corners_list = [
         [[float(p[0]), float(p[1])] for p in view] for view in corners_arr
     ]
-    result = auki_pnpkit.calibrate_from_square_views(
+    result = auki_pnplab.calibrate_from_square_views(
         corners_list,
         physical_size=0.2,
         image_size=(640, 480),
@@ -158,7 +158,7 @@ def test_calibrate_camera_planar_square():
     physical_size = 0.2
     object_pts = _square_object_points(physical_size)
     corners = _synthetic_square_corners(physical_size=physical_size)
-    result = auki_pnpkit.calibrate_camera(
+    result = auki_pnplab.calibrate_camera(
         object_pts,
         corners,  # (V, N, 2)
         image_size=(640, 480),
@@ -173,7 +173,7 @@ def test_calibrate_rejects_bad_physical_size():
     corners = _synthetic_square_corners()[:3]
     for size in (0.0, -0.1, float("nan"), float("inf")):
         with pytest.raises(ValueError):
-            auki_pnpkit.calibrate_from_square_views(
+            auki_pnplab.calibrate_from_square_views(
                 corners,
                 physical_size=size,
                 image_size=(640, 480),
@@ -184,7 +184,7 @@ def test_calibrate_rejects_bad_physical_size():
 def test_calibrate_rejects_too_few_views():
     corners = _synthetic_square_corners()[:2]
     with pytest.raises(ValueError):
-        auki_pnpkit.calibrate_from_square_views(
+        auki_pnplab.calibrate_from_square_views(
             corners,
             physical_size=0.2,
             image_size=(640, 480),
@@ -196,7 +196,7 @@ def test_calibrate_rejects_too_few_views():
 def test_calibrate_requires_image_size():
     corners = _synthetic_square_corners()
     with pytest.raises(ValueError, match="image_size"):
-        auki_pnpkit.calibrate_from_square_views(
+        auki_pnplab.calibrate_from_square_views(
             corners,
             physical_size=0.2,
             dist_len=0,

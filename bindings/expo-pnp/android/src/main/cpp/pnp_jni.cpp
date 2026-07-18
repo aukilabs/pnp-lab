@@ -197,7 +197,7 @@ Java_expo_modules_pnp_PnpJni_estimateSquarePoseFromRays(
     if (!ok) return nullptr;
   }
 
-  pnp_square_pose_estimate_t result = peyote_pnp_estimate_square_pose_from_rays(
+  pnp_square_pose_estimate_t result = pnp_estimate_square_pose_from_rays(
     nativeRays.data(),
     nativeRays.size(),
     physicalSize

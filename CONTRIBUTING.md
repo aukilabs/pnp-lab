@@ -1,11 +1,11 @@
-# Contributing to PnPKit
+# Contributing to PnPLab
 
-Thank you for helping improve PnPKit. This guide covers repository setup,
+Thank you for helping improve PnPLab. This guide covers repository setup,
 development workflow, and pull-request expectations.
 
 ## Before you start
 
-- Search the [issue tracker](https://github.com/aukilabs/pnpkit/issues) before
+- Search the [issue tracker](https://github.com/aukilabs/pnplab/issues) before
   filing a duplicate bug or feature request.
 - For large features, public API changes, new dependencies, or solver redesigns,
   open an issue first so the approach can be agreed before substantial
@@ -27,8 +27,8 @@ development workflow, and pull-request expectations.
 Clone and verify:
 
 ```bash
-git clone https://github.com/aukilabs/pnpkit.git
-cd pnpkit
+git clone https://github.com/aukilabs/pnplab.git
+cd pnplab
 just setup          # or: cargo test --workspace --locked
 just test
 ```
@@ -123,7 +123,7 @@ Minimum for core Rust changes (matches CI):
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace --locked --exclude pnpkit-python
+cargo test --workspace --locked --exclude pnplab-python
 cargo check -p pnp-core --no-default-features --locked
 ```
 

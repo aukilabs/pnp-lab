@@ -1,6 +1,6 @@
-# PnPKit
+# PnPLab
 
-PnPKit is a pure-Rust
+PnPLab is a pure-Rust
 [Perspective-n-Point](https://en.wikipedia.org/wiki/Perspective-n-Point) pose
 estimator. Given a calibrated monocular camera, known 3D landmarks, and their
 2D image observations, it recovers a 6-DoF pose with **no OpenCV runtime
@@ -29,7 +29,7 @@ Expo module for React Native.
   calibration workflows)
 - `no_std` + `alloc` core for embedded and mobile targets
 - C FFI with auto-generated header (`cbindgen`)
-- Python/NumPy package (`aukilabs-pnpkit` / `auki_pnpkit`)
+- Python/NumPy package (`aukilabs-pnplab` / `auki_pnplab`)
 - WASM Component Model interface (`auki:pnp@0.2.0`)
 - Numerically checked against OpenCV `cv::solvePnP` reference vectors
 
@@ -51,16 +51,16 @@ Expo module for React Native.
 HTTPS:
 
 ```bash
-git clone https://github.com/aukilabs/pnpkit.git
-cd pnpkit
+git clone https://github.com/aukilabs/pnplab.git
+cd pnplab
 cargo test --workspace --locked
 ```
 
 SSH:
 
 ```bash
-git clone git@github.com:aukilabs/pnpkit.git
-cd pnpkit
+git clone git@github.com:aukilabs/pnplab.git
+cd pnplab
 cargo test --workspace --locked
 ```
 
@@ -75,7 +75,7 @@ just test     # full Rust workspace tests
 
 ```toml
 [dependencies]
-pnp-core = { git = "https://github.com/aukilabs/pnpkit", package = "pnp-core" }
+pnp-core = { git = "https://github.com/aukilabs/pnplab", package = "pnp-core" }
 # or, in this workspace:
 # pnp-core = { path = "crates/pnp-core" }
 ```
@@ -384,8 +384,8 @@ Pipeline notes:
 | Triangulation | Midpoint of skew rays → left **OpenCV** 3D point |
 | Square stereo | `estimate_square_pose_from_stereo_pixels` triangulates corners then fits |
 
-C and Python expose the same stereo surface (`peyote_pnp_solve_stereo` /
-`peyote_pnp_triangulate`, and `auki_pnpkit.solve_pnp_stereo` /
+C and Python expose the same stereo surface (`pnp_solve_stereo` /
+`pnp_triangulate`, and `auki_pnplab.solve_pnp_stereo` /
 `triangulate`). Multi-view is Rust-core today (bindings follow-on). See
 [bindings/python/README.md](bindings/python/README.md).
 
@@ -464,8 +464,8 @@ Pipeline notes:
 | Image size | Required (`image_width` / `image_height`) for principal-point init |
 | Defaults | `min_views=3`, `fix_aspect_ratio=true`, `dist_len=5` |
 
-**Bindings:** Python (`auki_pnpkit.calibrate_from_square_views` /
-`calibrate_camera`) and C FFI (`peyote_pnp_calibrate_from_square_views`,
+**Bindings:** Python (`auki_pnplab.calibrate_from_square_views` /
+`calibrate_camera`) and C FFI (`pnp_calibrate_from_square_views`,
 `pnp_calibrate_options_t`) are available. **WASM and Expo calibration
 bindings are deferred** for a follow-on. See
 [bindings/python/README.md](bindings/python/README.md) and
@@ -482,7 +482,7 @@ just python-test          # isolated wheel + pytest
 
 ```python
 import numpy as np
-import auki_pnpkit
+import auki_pnplab
 
 object_points = np.array(
     [[-0.15, -0.15, 0.0], [0.15, -0.15, 0.0], [0.15, 0.15, 0.0], [-0.15, 0.15, 0.0]],
@@ -500,7 +500,7 @@ camera = {
     "dist": [],  # or OpenCV [k1, k2, p1, p2, k3, ...]
 }
 
-pose = auki_pnpkit.solve_pnp(object_points, image_points, camera, method="iterative")
+pose = auki_pnplab.solve_pnp(object_points, image_points, camera, method="iterative")
 print(pose["position"], pose["rotation"])
 ```
 
@@ -512,7 +512,7 @@ A pinhole `(3, 3)` OpenCV camera matrix is also accepted in place of the
 ```bash
 cargo build --release -p pnp-ffi --locked
 # header: crates/pnp-ffi/include/pnp.h
-# library: target/release/libpeyote_pnp_ffi.{a,so,dylib}
+# library: target/release/libpnp_ffi.{a,so,dylib}
 ```
 
 Link against the static or dynamic library and include `pnp.h`. Solve entry
@@ -534,7 +534,7 @@ Autolink the package (for example via a git submodule and Expo
 {
   "expo": {
     "autolinking": {
-      "searchPaths": ["./node_modules", "./modules/pnpkit/bindings"]
+      "searchPaths": ["./node_modules", "./modules/pnplab/bindings"]
     }
   }
 }
@@ -577,7 +577,7 @@ crates/
   pnp-wasm/     WASM Component Model guest (WIT)
 
 bindings/
-  python/       Maturin / PyO3 package (aukilabs-pnpkit)
+  python/       Maturin / PyO3 package (aukilabs-pnplab)
   expo-pnp/     Expo module + prebuilt Android/iOS natives
 
 scripts/        Cross-target build and check helpers

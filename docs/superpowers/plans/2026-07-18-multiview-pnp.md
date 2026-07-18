@@ -428,7 +428,7 @@ If time-boxed, this task can be deferred; note in CHANGELOG as follow-up.
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace --locked --exclude pnpkit-python
+cargo test --workspace --locked --exclude pnplab-python
 cargo check -p pnp-core --no-default-features --locked
 ./scripts/check-python.sh
 ```

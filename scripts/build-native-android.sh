@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build libpeyote_pnp_ffi.so for Android ABIs and install into
+# Build libpnp_ffi.so for Android ABIs and install into
 # bindings/expo-pnp jniLibs (+ C header for the JNI wrapper).
 #
 # Requires: cargo, Android NDK (ANDROID_NDK_HOME or SDK ndk/), cbindgen.
@@ -161,14 +161,14 @@ mkdir -p \
   "$OUT_JNI/x86_64" \
   "$OUT_INCLUDE"
 
-cp "target/aarch64-linux-android/$PROFILE/libpeyote_pnp_ffi.so" "$OUT_JNI/arm64-v8a/libpeyote_pnp_ffi.so"
-cp "target/armv7-linux-androideabi/$PROFILE/libpeyote_pnp_ffi.so" "$OUT_JNI/armeabi-v7a/libpeyote_pnp_ffi.so"
-cp "target/i686-linux-android/$PROFILE/libpeyote_pnp_ffi.so" "$OUT_JNI/x86/libpeyote_pnp_ffi.so"
-cp "target/x86_64-linux-android/$PROFILE/libpeyote_pnp_ffi.so" "$OUT_JNI/x86_64/libpeyote_pnp_ffi.so"
+cp "target/aarch64-linux-android/$PROFILE/libpnp_ffi.so" "$OUT_JNI/arm64-v8a/libpnp_ffi.so"
+cp "target/armv7-linux-androideabi/$PROFILE/libpnp_ffi.so" "$OUT_JNI/armeabi-v7a/libpnp_ffi.so"
+cp "target/i686-linux-android/$PROFILE/libpnp_ffi.so" "$OUT_JNI/x86/libpnp_ffi.so"
+cp "target/x86_64-linux-android/$PROFILE/libpnp_ffi.so" "$OUT_JNI/x86_64/libpnp_ffi.so"
 cp crates/pnp-ffi/include/pnp.h "$OUT_INCLUDE/pnp.h"
 
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-  echo "    installed $OUT_JNI/$abi/libpeyote_pnp_ffi.so ($(wc -c < "$OUT_JNI/$abi/libpeyote_pnp_ffi.so") bytes)"
+  echo "    installed $OUT_JNI/$abi/libpnp_ffi.so ($(wc -c < "$OUT_JNI/$abi/libpnp_ffi.so") bytes)"
 done
 
 echo "OK: Android natives ready under bindings/expo-pnp/android/src/main/jniLibs/"

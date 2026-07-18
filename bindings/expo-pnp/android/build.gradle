@@ -20,7 +20,7 @@ android {
   }
   sourceSets {
     main {
-      // Prebuilt libpeyote_pnp_ffi.so from `just expo-android`.
+      // Prebuilt libpnp_ffi.so from `just expo-android`.
       jniLibs.srcDirs = ['src/main/jniLibs']
     }
   }

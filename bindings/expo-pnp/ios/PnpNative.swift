@@ -29,7 +29,7 @@ public enum PnpNative {
     }
 
     let result = nativeRays.withUnsafeBufferPointer { buffer in
-      peyote_pnp_estimate_square_pose_from_rays(
+      pnp_estimate_square_pose_from_rays(
         buffer.baseAddress,
         UInt(buffer.count),
         physicalSize
@@ -81,7 +81,7 @@ public enum PnpNative {
     let result = try withNativeCamera(camera) { nativeCamera in
       nativeLandmarks.withUnsafeBufferPointer { landmarkBuffer in
         nativeObservations.withUnsafeBufferPointer { observationBuffer in
-          peyote_pnp_solve_camera_pose(
+          pnp_solve_camera_pose(
             landmarkBuffer.baseAddress,
             UInt(landmarkBuffer.count),
             observationBuffer.baseAddress,

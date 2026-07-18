@@ -2,7 +2,7 @@ package expo.modules.pnp
 
 object PnpJni {
   private val loadResult = runCatching {
-    System.loadLibrary("peyote_pnp_ffi")
+    System.loadLibrary("pnp_ffi")
     System.loadLibrary("pnp_jni")
   }
 

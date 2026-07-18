@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build libpeyote_pnp_ffi.a for device + simulator and package
+# Build libpnp_ffi.a for device + simulator and package
 # PnpRust.xcframework into bindings/expo-pnp/ios/.
 #
 # Requires: Xcode (xcodebuild), cbindgen, Rust targets:
@@ -56,8 +56,8 @@ cargo build --locked --profile "$PROFILE" -p pnp-ffi --target "$SIM_TARGET"
 generate_header
 
 HEADER="$ROOT/crates/pnp-ffi/include/pnp.h"
-DEVICE_LIB="$ROOT/target/$DEVICE_TARGET/$PROFILE/libpeyote_pnp_ffi.a"
-SIM_LIB="$ROOT/target/$SIM_TARGET/$PROFILE/libpeyote_pnp_ffi.a"
+DEVICE_LIB="$ROOT/target/$DEVICE_TARGET/$PROFILE/libpnp_ffi.a"
+SIM_LIB="$ROOT/target/$SIM_TARGET/$PROFILE/libpnp_ffi.a"
 
 for f in "$HEADER" "$DEVICE_LIB" "$SIM_LIB"; do
   if [[ ! -f "$f" ]]; then
@@ -83,8 +83,8 @@ SIM_HEADERS="$STAGE/sim/Headers"
 mk_headers "$DEVICE_HEADERS"
 mk_headers "$SIM_HEADERS"
 
-DEVICE_STAGED="$STAGE/device/libpeyote_pnp_ffi.a"
-SIM_STAGED="$STAGE/sim/libpeyote_pnp_ffi.a"
+DEVICE_STAGED="$STAGE/device/libpnp_ffi.a"
+SIM_STAGED="$STAGE/sim/libpnp_ffi.a"
 cp "$DEVICE_LIB" "$DEVICE_STAGED"
 cp "$SIM_LIB" "$SIM_STAGED"
 

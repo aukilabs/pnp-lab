@@ -1,4 +1,4 @@
-"""NumPy-friendly Python bindings for PnPKit."""
+"""NumPy-friendly Python bindings for PnPLab."""
 
 from __future__ import annotations
 

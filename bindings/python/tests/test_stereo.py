@@ -1,4 +1,4 @@
-"""Stereo PnP and triangulation tests for auki_pnpkit."""
+"""Stereo PnP and triangulation tests for auki_pnplab."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-import auki_pnpkit
+import auki_pnplab
 
 
 def _identity_quat() -> dict[str, float]:
@@ -170,7 +170,7 @@ def test_triangulate_known_point() -> None:
     rig = _rig(baseline=0.1, fx=500.0, cx=320.0, cy=240.0)
     left = [320.0, 240.0]
     right = [500.0 * (-0.1) / 2.0 + 320.0, 240.0]
-    pt = auki_pnpkit.triangulate(left, right, rig)
+    pt = auki_pnplab.triangulate(left, right, rig)
     assert abs(pt["x"] - 0.0) < 1e-6
     assert abs(pt["y"] - 0.0) < 1e-6
     assert abs(pt["z"] - 2.0) < 1e-6
@@ -179,7 +179,7 @@ def test_triangulate_known_point() -> None:
 def test_triangulate_rejects_parallel_rays() -> None:
     rig = _rig(baseline=0.1, fx=500.0)
     with pytest.raises(RuntimeError, match="solver failed"):
-        auki_pnpkit.triangulate([320.0, 240.0], [320.0, 240.0], rig)
+        auki_pnplab.triangulate([320.0, 240.0], [320.0, 240.0], rig)
 
 
 def test_solve_pnp_stereo_recovers_known_pose() -> None:
@@ -189,7 +189,7 @@ def test_solve_pnp_stereo_recovers_known_pose() -> None:
     gl_true = _from_opencv_to_opengl(R, t)
     obs = _project_stereo(landmarks, rig, R, t)
 
-    pose = auki_pnpkit.solve_pnp_stereo(landmarks, obs, rig, method="iterative")
+    pose = auki_pnplab.solve_pnp_stereo(landmarks, obs, rig, method="iterative")
     assert _position_error(pose["position"], gl_true["position"]) < 1e-3
     assert _quaternion_angle(pose["rotation"], gl_true["rotation"]) < 1e-3
 
@@ -201,7 +201,7 @@ def test_solve_pnp_stereo_left_only() -> None:
     gl_true = _from_opencv_to_opengl(R, t)
     obs = _project_stereo(landmarks, rig, R, t, left_only=True)
 
-    pose = auki_pnpkit.solve_pnp_stereo(landmarks, obs, rig, method="iterative")
+    pose = auki_pnplab.solve_pnp_stereo(landmarks, obs, rig, method="iterative")
     assert _position_error(pose["position"], gl_true["position"]) < 1e-3
     assert _quaternion_angle(pose["rotation"], gl_true["rotation"]) < 1e-3
 
@@ -212,9 +212,9 @@ def test_solve_pnp_stereo_camera_pose_is_inverse() -> None:
     R, t, _ = _cv_pose([0.05, -0.15, 0.08], [0.02, -0.01, 1.5])
     obs = _project_stereo(landmarks, rig, R, t)
 
-    obj = auki_pnpkit.solve_pnp_stereo(landmarks, obs, rig, method="sqpnp")
-    cam = auki_pnpkit.solve_pnp_stereo_camera_pose(landmarks, obs, rig, method="sqpnp")
-    back = auki_pnpkit.camera_pose_from_solve_pnp_pose(cam)
+    obj = auki_pnplab.solve_pnp_stereo(landmarks, obs, rig, method="sqpnp")
+    cam = auki_pnplab.solve_pnp_stereo_camera_pose(landmarks, obs, rig, method="sqpnp")
+    back = auki_pnplab.camera_pose_from_solve_pnp_pose(cam)
     assert _position_error(obj["position"], back["position"]) < 1e-6
     assert _quaternion_angle(obj["rotation"], back["rotation"]) < 1e-6
 
@@ -229,7 +229,7 @@ def test_solve_pnp_stereo_mismatched_ids() -> None:
         {"id": "99", "left": [100.0, 200.0], "right": None},
     ]
     with pytest.raises(ValueError, match="do not match"):
-        auki_pnpkit.solve_pnp_stereo(landmarks, obs, rig, method="epnp")
+        auki_pnplab.solve_pnp_stereo(landmarks, obs, rig, method="epnp")
 
 
 def test_solve_pnp_stereo_invalid_rig() -> None:
@@ -249,4 +249,4 @@ def test_solve_pnp_stereo_invalid_rig() -> None:
         },
     }
     with pytest.raises(RuntimeError, match="solver failed"):
-        auki_pnpkit.solve_pnp_stereo(landmarks, obs, bad_rig)
+        auki_pnplab.solve_pnp_stereo(landmarks, obs, bad_rig)

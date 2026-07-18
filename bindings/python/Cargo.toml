@@ -1,6 +1,6 @@
 [package]
-name = "pnpkit-python"
-description = "Python and NumPy bindings for PnPKit"
+name = "pnplab-python"
+description = "Python and NumPy bindings for PnPLab"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

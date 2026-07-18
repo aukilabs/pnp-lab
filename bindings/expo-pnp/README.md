@@ -1,18 +1,18 @@
 # expo-pnp
 
 Expo module for landmark PnP and square-marker pose solving, powered by the
-[PnPKit](https://github.com/aukilabs/pnpkit) Rust workspace.
+[PnPLab](https://github.com/aukilabs/pnplab) Rust workspace.
 
 ## Install / autolink
 
 This package is intended to live under your app’s Expo modules search path
-(for example a git submodule at `modules/pnpkit/bindings/expo-pnp`):
+(for example a git submodule at `modules/pnplab/bindings/expo-pnp`):
 
 ```json
 {
   "expo": {
     "autolinking": {
-      "searchPaths": ["./node_modules", "./modules/pnpkit/bindings"]
+      "searchPaths": ["./node_modules", "./modules/pnplab/bindings"]
     }
   }
 }

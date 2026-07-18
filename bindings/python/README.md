@@ -1,12 +1,12 @@
-# Auki PnPKit for Python
+# Auki PnPLab for Python
 
-NumPy-friendly Python bindings for PnPKit’s Perspective-n-Point solvers and
+NumPy-friendly Python bindings for PnPLab’s Perspective-n-Point solvers and
 square-marker pose estimation.
 
 | | |
 |---|---|
-| **Distribution** | `aukilabs-pnpkit` |
-| **Import** | `auki_pnpkit` |
+| **Distribution** | `aukilabs-pnplab` |
+| **Import** | `auki_pnplab` |
 | **License** | [MIT](LICENSE) |
 | **Python** | 3.9+ |
 
@@ -14,14 +14,14 @@ square-marker pose estimation.
 > first release:
 >
 > ```bash
-> pip install aukilabs-pnpkit
+> pip install aukilabs-pnplab
 > ```
 
 ## Quick start
 
 ```python
 import numpy as np
-import auki_pnpkit
+import auki_pnplab
 
 object_points = np.array(
     [
@@ -51,7 +51,7 @@ camera = {
     "dist": [],  # or [k1, k2, p1, p2, k3, ...]
 }
 
-pose = auki_pnpkit.solve_pnp(
+pose = auki_pnplab.solve_pnp(
     object_points,
     image_points,
     camera,
@@ -59,7 +59,7 @@ pose = auki_pnpkit.solve_pnp(
 )
 # pose["position"] / pose["rotation"] — object pose in OpenGL coordinates
 
-camera_pose = auki_pnpkit.solve_pnp_camera_pose(
+camera_pose = auki_pnplab.solve_pnp_camera_pose(
     object_points,
     image_points,
     camera,
@@ -98,7 +98,7 @@ the pose of the right camera in the left camera frame, in **OpenCV** convention
 (same as mono). Triangulated points are in the **left OpenCV** frame.
 
 ```python
-import auki_pnpkit
+import auki_pnplab
 
 rig = {
     "left": {"fx": 800.0, "fy": 800.0, "cx": 320.0, "cy": 240.0, "dist": []},
@@ -124,12 +124,12 @@ observations = [
     {"id": "3", "left": [220.0, 340.0], "right": [200.0, 340.0]},
 ]
 
-pose = auki_pnpkit.solve_pnp_stereo(
+pose = auki_pnplab.solve_pnp_stereo(
     landmarks, observations, rig, method="iterative"
 )
 
 # Single correspondence → 3D in left OpenCV frame.
-point = auki_pnpkit.triangulate([320.0, 240.0], [295.0, 240.0], rig)
+point = auki_pnplab.triangulate([320.0, 240.0], [295.0, 240.0], rig)
 # point["x"], point["y"], point["z"]
 ```
 
@@ -141,10 +141,10 @@ views of a known planar target. Prefer
 
 ```python
 import numpy as np
-import auki_pnpkit
+import auki_pnplab
 
 # corners: (N, 4, 2) array or sequence of 4-point views
-result = auki_pnpkit.calibrate_from_square_views(
+result = auki_pnplab.calibrate_from_square_views(
     corners,
     physical_size=0.05,          # meters (or same unit as object model)
     image_size=(1920, 1080),     # or image_width=..., image_height=...
@@ -158,7 +158,7 @@ result = auki_pnpkit.calibrate_from_square_views(
 # result["views_used"]
 
 # General planar / non-square targets: shared object_points + per-view pixels
-result = auki_pnpkit.calibrate_camera(
+result = auki_pnplab.calibrate_camera(
     object_points,   # (N, 3)
     views,           # sequence of (N, 2) or (V, N, 2)
     image_size=(640, 480),
@@ -188,4 +188,4 @@ storage before detaching.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Parent project: [PnPKit](https://github.com/aukilabs/pnpkit).
+MIT — see [LICENSE](LICENSE). Parent project: [PnPLab](https://github.com/aukilabs/pnplab).

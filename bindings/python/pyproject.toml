@@ -3,9 +3,9 @@ requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "aukilabs-pnpkit"
+name = "aukilabs-pnplab"
 version = "0.1.0"
-description = "Perspective-n-Point pose estimation powered by PnPKit"
+description = "Perspective-n-Point pose estimation powered by PnPLab"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -26,11 +26,11 @@ dependencies = ["numpy>=1.24"]
 test = ["pytest>=8"]
 
 [project.urls]
-Repository = "https://github.com/aukilabs/pnpkit"
+Repository = "https://github.com/aukilabs/pnplab"
 
 [tool.maturin]
 bindings = "pyo3"
-module-name = "auki_pnpkit._native"
+module-name = "auki_pnplab._native"
 python-source = "python"
 strip = true
 

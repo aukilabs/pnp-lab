@@ -24,7 +24,7 @@
 - **Do not change** mono/stereo/multiview PnP APIs except additive re-exports.
 - Prefer existing `PnpError` variants; avoid new FFI/WIT error enum variants in v1.
 - Tests required; `cargo fmt`; public rustdoc; `CHANGELOG.md` Unreleased.
-- CI: `cargo test --workspace --exclude pnpkit-python` must stay green; Python job when Python API lands.
+- CI: `cargo test --workspace --exclude pnplab-python` must stay green; Python job when Python API lands.
 
 ## Locked design decisions
 
@@ -447,7 +447,7 @@ fn calibrate_rejects_identical_poses_cleanly() {
 
 **Files:**
 - `bindings/python/src/lib.rs`
-- `bindings/python/python/auki_pnpkit/__init__.py`
+- `bindings/python/python/auki_pnplab/__init__.py`
 - `__init__.pyi`
 - `bindings/python/tests/test_calibrate.py`
 - `bindings/python/README.md`
@@ -455,7 +455,7 @@ fn calibrate_rejects_identical_poses_cleanly() {
 **API:**
 
 ```python
-result = auki_pnpkit.calibrate_from_square_views(
+result = auki_pnplab.calibrate_from_square_views(
     corners,              # sequence of 4 points or (N,4,2) array
     physical_size=0.05,
     image_size=(1920, 1080),  # or image_width=, image_height=
@@ -499,7 +499,7 @@ typedef struct pnp_calibrate_options_t {
 } pnp_calibrate_options_t;
 
 // Out: camera via pnp_camera_t, rms, per_view_rms buffer, poses buffer
-pnp_error_t peyote_pnp_calibrate_from_square_views(
+pnp_error_t pnp_calibrate_from_square_views(
   const pnp_vector2_t *corners, // N*4
   uintptr_t num_views,
   double physical_size,
@@ -565,7 +565,7 @@ CHANGELOG Unreleased:
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace --locked --exclude pnpkit-python
+cargo test --workspace --locked --exclude pnplab-python
 cargo check -p pnp-core --no-default-features --locked
 ./scripts/check-python.sh   # if Python touched
 cargo test -p pnp-ffi --locked  # if FFI touched

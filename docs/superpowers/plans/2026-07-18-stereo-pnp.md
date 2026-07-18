@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend PnPKit with calibrated stereo: a `StereoRig` model, triangulation, joint left+right landmark PnP, and stereo square-marker pose — without breaking monocular APIs.
+**Goal:** Extend PnPLab with calibrated stereo: a `StereoRig` model, triangulation, joint left+right landmark PnP, and stereo square-marker pose — without breaking monocular APIs.
 
 **Architecture:** Keep algebraic mono solvers (EPnP / SQPnP / iterative) unchanged. Add a stereo rig type (left/right `Camera` + extrinsics). Seed object pose with mono PnP on the primary (left) view, then refine with a joint Levenberg–Marquardt residual over both eyes. Triangulation is a separate primitive used for tests, square corners, and optional 3D–3D checks. Express all new public poses in the same OpenGL convention as mono after converting from OpenCV internals.
 
@@ -19,7 +19,7 @@
 - No stereo matching, disparity maps, or rectification pipelines in scope.
 - New code needs unit tests; synthetic stereo fixtures preferred over OpenCV stereo deps.
 - License MIT; update CHANGELOG under Unreleased; public items need rustdoc.
-- CI: `cargo test --workspace --exclude pnpkit-python` must stay green; extend Python job when Python APIs land.
+- CI: `cargo test --workspace --exclude pnplab-python` must stay green; extend Python job when Python APIs land.
 
 ---
 
@@ -512,13 +512,13 @@ typedef struct pnp_stereo_observation_t {
   pnp_vector2_t right;
 } pnp_stereo_observation_t;
 
-pnp_result_t peyote_pnp_solve_stereo(
+pnp_result_t pnp_solve_stereo(
   const pnp_landmark_t *landmarks, uintptr_t n_lm,
   const pnp_stereo_observation_t *obs, uintptr_t n_obs,
   const pnp_stereo_rig_t *rig,
   pnp_method_t method);
 
-pnp_result_t peyote_pnp_triangulate(
+pnp_result_t pnp_triangulate(
   pnp_vector2_t left, pnp_vector2_t right,
   const pnp_stereo_rig_t *rig,
   pnp_vector3_t *out_point); // or return struct with error
@@ -535,8 +535,8 @@ pnp_result_t peyote_pnp_triangulate(
 
 **Files:**
 - Modify: `bindings/python/src/lib.rs`
-- Modify: `bindings/python/python/auki_pnpkit/__init__.py`, `__init__.pyi`
-- Modify: `bindings/python/tests/test_pnpkit.py` or `test_stereo.py`
+- Modify: `bindings/python/python/auki_pnplab/__init__.py`, `__init__.pyi`
+- Modify: `bindings/python/tests/test_pnplab.py` or `test_stereo.py`
 - Modify: `bindings/python/README.md`
 
 **Interfaces:**
@@ -574,7 +574,7 @@ def triangulate(left_pixel, right_pixel, rig) -> dict: ...  # {x,y,z}
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace --locked --exclude pnpkit-python
+cargo test --workspace --locked --exclude pnplab-python
 cargo check -p pnp-core --no-default-features --locked
 ./scripts/check-python.sh
 ```

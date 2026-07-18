@@ -1,7 +1,7 @@
 {
   "name": "expo-pnp",
   "version": "0.1.0",
-  "description": "PnP pose estimation for Expo, powered by PnPKit",
+  "description": "PnP pose estimation for Expo, powered by PnPLab",
   "main": "index.ts",
   "types": "index.ts",
   "scripts": {
@@ -13,16 +13,16 @@
     "expo",
     "pnp",
     "pose-estimation",
-    "pnpkit"
+    "pnplab"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aukilabs/pnpkit.git",
+    "url": "git+https://github.com/aukilabs/pnplab.git",
     "directory": "bindings/expo-pnp"
   },
   "author": "Auki Labs <dev@aukilabs.com> (https://aukilabs.com)",
   "license": "MIT",
-  "homepage": "https://github.com/aukilabs/pnpkit#readme",
+  "homepage": "https://github.com/aukilabs/pnplab#readme",
   "peerDependencies": {
     "expo": "*",
     "react": "*",

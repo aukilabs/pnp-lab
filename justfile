@@ -1,4 +1,4 @@
-# PnPKit — common development commands
+# PnPLab — common development commands
 #
 # Common:
 #   just test          # Rust workspace tests
@@ -258,7 +258,7 @@ build-android:
 # Prebuilt artifacts land inside the package so app consumers need no Rust.
 # ---------------------------------------------------------------------------
 
-# Build Android libpeyote_pnp_ffi.so → bindings/expo-pnp/android/src/main/jniLibs/
+# Build Android libpnp_ffi.so → bindings/expo-pnp/android/src/main/jniLibs/
 expo-android:
     ./scripts/build-native-android.sh
 
@@ -277,7 +277,7 @@ ffi-test:
 # Python bindings (bindings/python)
 # ---------------------------------------------------------------------------
 
-# Build the aukilabs-pnpkit Python wheel into bindings/python/dist/
+# Build the aukilabs-pnplab Python wheel into bindings/python/dist/
 python-build:
     ./scripts/build-python.sh
 
@@ -320,9 +320,9 @@ generate-reference:
 # Print artifact sizes
 sizes: build-release
     @echo "=== Release artifact sizes ==="
-    @ls -lh target/release/libpeyote_pnp_ffi.a 2>/dev/null || true
-    @ls -lh target/release/libpeyote_pnp_ffi.dylib 2>/dev/null || true
-    @ls -lh bindings/expo-pnp/android/src/main/jniLibs/arm64-v8a/libpeyote_pnp_ffi.so 2>/dev/null || true
+    @ls -lh target/release/libpnp_ffi.a 2>/dev/null || true
+    @ls -lh target/release/libpnp_ffi.dylib 2>/dev/null || true
+    @ls -lh bindings/expo-pnp/android/src/main/jniLibs/arm64-v8a/libpnp_ffi.so 2>/dev/null || true
 
 # Clean all build artifacts
 clean:

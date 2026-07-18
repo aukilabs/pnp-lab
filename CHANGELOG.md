@@ -1,13 +1,13 @@
 # Changelog
 
-## Unreleased — pnpkit extraction
+## Unreleased — pnplab extraction
 
-- Extracted the PnP workspace from the peyote app into a standalone monorepo.
+- Extracted the PnP workspace from the former monorepo app host into a standalone monorepo.
 - Grouped the Expo module under `bindings/expo-pnp`, separate from the core
   Rust library crates.
 - Prebuilt Android `.so` libraries and the iOS XCFramework install into the
   Expo package (same consumer flow as QRKit).
-- Added the `aukilabs-pnpkit` Python/NumPy package under `bindings/python`
+- Added the `aukilabs-pnplab` Python/NumPy package under `bindings/python`
   with `solve_pnp`, `solve_pnp_camera_pose`,
   `camera_pose_from_solve_pnp_pose`, and `estimate_square_pose_from_rays`.
 - **Breaking:** public solve APIs now take a first-class `Camera`
@@ -38,7 +38,7 @@
     or right pixel) are supported in the joint residual. Seed prefers left;
     right-only seeds when right has enough points for the method.
   - C FFI: `pnp_stereo_rig_t`, `pnp_stereo_observation_t`,
-    `peyote_pnp_solve_stereo`, `peyote_pnp_triangulate` (header via cbindgen).
+    `pnp_solve_stereo`, `pnp_triangulate` (header via cbindgen).
   - Python: `solve_pnp_stereo`, `solve_pnp_stereo_camera_pose`, `triangulate`.
   - Out of scope for this release: stereo rectification, disparity matching,
     WIT stereo exports, Expo dual-camera product wiring.
@@ -53,6 +53,6 @@
     **OpenGL** (same as `solve_pnp`). Requires diverse views (tilts); pure
     frontal parallel planes are ill-conditioned. Single-view is not supported.
   - Python: `calibrate_from_square_views`, `calibrate_camera`.
-  - C FFI: `pnp_calibrate_options_t`, `peyote_pnp_calibrate_from_square_views`.
+  - C FFI: `pnp_calibrate_options_t`, `pnp_calibrate_from_square_views`.
   - Out of scope for this release: WASM WIT calibration, Expo/TS calibration
     wrappers, single-view calibration, multi-camera extrinsics, OpenCV runtime.

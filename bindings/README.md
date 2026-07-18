@@ -1,10 +1,10 @@
-# PnPKit bindings
+# PnPLab bindings
 
 Publishable language and framework integrations built on the Rust crates:
 
 | Package | Path | Notes |
 |---------|------|--------|
-| Python / NumPy | [`python/`](python/) | PyPI name `aukilabs-pnpkit`, import `auki_pnpkit` |
+| Python / NumPy | [`python/`](python/) | PyPI name `aukilabs-pnplab`, import `auki_pnplab` |
 | Expo / React Native | [`expo-pnp/`](expo-pnp/) | TypeScript API + prebuilt Android/iOS natives |
 
 Low-level C and WASM APIs live under `crates/pnp-ffi` and `crates/pnp-wasm`

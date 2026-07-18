@@ -1,1 +1,4 @@
-module PnpRust { header "pnp.h" export * }
+module PnpRust {
+  header "pnp.h"
+  export *
+}

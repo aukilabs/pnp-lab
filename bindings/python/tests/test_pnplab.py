@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import auki_pnpkit
+import auki_pnplab
 
 ROOT = Path(__file__).resolve().parents[3]
 REFERENCE = json.loads(
@@ -61,13 +61,13 @@ def _reference_result(set_index: int, method: str) -> dict:
 
 
 def test_version_is_exposed() -> None:
-    assert isinstance(auki_pnpkit.__version__, str)
-    assert auki_pnpkit.__version__
+    assert isinstance(auki_pnplab.__version__, str)
+    assert auki_pnplab.__version__
 
 
 def test_solve_pnp_matches_reference_iterative_set0() -> None:
     ref = _reference_result(0, "iterative")
-    pose = auki_pnpkit.solve_pnp(
+    pose = auki_pnplab.solve_pnp(
         _landmarks(),
         _observations(0),
         _camera(),
@@ -80,7 +80,7 @@ def test_solve_pnp_matches_reference_iterative_set0() -> None:
 
 def test_solve_pnp_camera_pose_matches_reference() -> None:
     ref = _reference_result(0, "iterative")
-    camera_pose = auki_pnpkit.solve_pnp_camera_pose(
+    camera_pose = auki_pnplab.solve_pnp_camera_pose(
         _landmarks(),
         _observations(0),
         _camera(),
@@ -109,7 +109,7 @@ def test_dict_landmarks_and_camera_forms() -> None:
         _camera_matrix(),
         {"m": [815.8511, 0.0, 0.0, 0.0, 815.8511, 0.0, 960.0, 540.0, 1.0]},
     ):
-        pose = auki_pnpkit.solve_pnp(landmarks, observations, camera, method="iterative")
+        pose = auki_pnplab.solve_pnp(landmarks, observations, camera, method="iterative")
         assert _position_error(pose["position"], ref["gl_position"]) < 1e-3
 
 
@@ -119,7 +119,7 @@ def test_solve_pnp_with_distortion_coeffs() -> None:
         **_camera(),
         "dist": [0.05, -0.02, 0.0, 0.0, 0.0],
     }
-    pose = auki_pnpkit.solve_pnp(
+    pose = auki_pnplab.solve_pnp(
         _landmarks(),
         _observations(0),
         camera,
@@ -134,7 +134,7 @@ def test_camera_pose_from_solve_pnp_pose_inverts_translation() -> None:
         "position": {"x": 1.0, "y": 2.0, "z": 3.0},
         "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
     }
-    camera = auki_pnpkit.camera_pose_from_solve_pnp_pose(pose)
+    camera = auki_pnplab.camera_pose_from_solve_pnp_pose(pose)
     assert camera["position"]["x"] == pytest.approx(-1.0)
     assert camera["position"]["y"] == pytest.approx(-2.0)
     assert camera["position"]["z"] == pytest.approx(-3.0)
@@ -174,7 +174,7 @@ def test_estimate_square_pose_from_rays_synthetic() -> None:
         for corner in corners
     ]
 
-    estimate = auki_pnpkit.estimate_square_pose_from_rays(rays, physical_size)
+    estimate = auki_pnplab.estimate_square_pose_from_rays(rays, physical_size)
     assert estimate["confidence"] > 0.95
     assert abs(estimate["pose"]["position"]["x"] - center[0]) < 1e-4
     assert abs(estimate["pose"]["position"]["y"] - center[1]) < 1e-4
@@ -185,21 +185,21 @@ def test_estimate_square_pose_from_rays_synthetic() -> None:
 
 def test_invalid_inputs_raise_python_exceptions() -> None:
     with pytest.raises(ValueError, match="unknown method"):
-        auki_pnpkit.solve_pnp(
+        auki_pnplab.solve_pnp(
             _landmarks(),
             _observations(0),
             _camera(),
             method="unknown",
         )
     with pytest.raises(ValueError, match="insufficient points"):
-        auki_pnpkit.solve_pnp(
+        auki_pnplab.solve_pnp(
             _landmarks()[:2],
             _observations(0)[:2],
             _camera(),
             method="iterative",
         )
     with pytest.raises(ValueError, match="physical_size"):
-        auki_pnpkit.estimate_square_pose_from_rays(
+        auki_pnplab.estimate_square_pose_from_rays(
             [
                 {"origin": [0, 0, 0], "direction": [0, 0, 1]},
                 {"origin": [0, 0, 0], "direction": [0, 0, 1]},
@@ -209,7 +209,7 @@ def test_invalid_inputs_raise_python_exceptions() -> None:
             0.0,
         )
     with pytest.raises(ValueError, match="exactly 4 rays"):
-        auki_pnpkit.estimate_square_pose_from_rays(
+        auki_pnplab.estimate_square_pose_from_rays(
             [{"origin": [0, 0, 0], "direction": [0, 0, 1]}],
             0.8,
         )
