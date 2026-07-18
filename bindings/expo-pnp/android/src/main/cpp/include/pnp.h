@@ -122,6 +122,31 @@ typedef struct pnp_landmark_observation_t {
     struct pnp_vector2_t position;
 } pnp_landmark_observation_t;
 
+/**
+ * Per-landmark stereo observation (pixel coords, possibly distorted).
+ *
+ * `has_left` / `has_right`: non-zero = present; zero = missing (position ignored).
+ */
+typedef struct pnp_stereo_observation_t {
+    const char *id;
+    int32_t has_left;
+    struct pnp_vector2_t left;
+    int32_t has_right;
+    struct pnp_vector2_t right;
+} pnp_stereo_observation_t;
+
+/**
+ * Calibrated stereo pair: left/right monocular cameras + fixed extrinsics.
+ *
+ * `right_from_left` is the pose of the right camera in the left camera frame
+ * (OpenCV convention for stereo math).
+ */
+typedef struct pnp_stereo_rig_t {
+    struct pnp_camera_t left;
+    struct pnp_camera_t right;
+    struct pnp_pose_t right_from_left;
+} pnp_stereo_rig_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -185,8 +210,46 @@ struct pnp_result_t peyote_pnp_solve_camera_pose(const struct pnp_landmark_t *la
 
 /**
  * Invert a solvePnP pose to get the camera pose.
+ *
+ * # Safety
+ * `pose` may be null (returns identity). If non-null, it must point to a valid
+ * `pnp_pose_t`.
  */
 struct pnp_pose_t peyote_pnp_camera_pose_from_solve_pnp_pose(const struct pnp_pose_t *pose);
+
+/**
+ * Solve stereo PnP and return object pose in OpenGL coordinates (left primary).
+ *
+ * Landmarks and observations are matched by string `id` (same length required).
+ * Missing left/right pixels (`has_* == 0`) are skipped in the joint residual.
+ *
+ * # Safety
+ * `landmarks` must point to `num_landmarks` valid `pnp_landmark_t` structs.
+ * `observations` must point to `num_observations` valid `pnp_stereo_observation_t`
+ * structs. All `id` pointers must be valid null-terminated C strings.
+ * `rig` must be valid; camera `dist` buffers follow `pnp_camera_t` rules.
+ */
+struct pnp_result_t peyote_pnp_solve_stereo(const struct pnp_landmark_t *landmarks,
+                                            uintptr_t num_landmarks,
+                                            const struct pnp_stereo_observation_t *observations,
+                                            uintptr_t num_observations,
+                                            const struct pnp_stereo_rig_t *rig,
+                                            enum pnp_method_t method);
+
+/**
+ * Midpoint-triangulate a stereo correspondence into the left OpenCV frame.
+ *
+ * On success writes the 3D point to `out_point` and returns `PNP_OK` in
+ * `pnp_result_t.error` (the `pose` field is zeroed / unused).
+ *
+ * # Safety
+ * `rig` must be a valid pointer; camera `dist` buffers follow `pnp_camera_t`.
+ * `out_point` must be a valid writable pointer.
+ */
+struct pnp_result_t peyote_pnp_triangulate(struct pnp_vector2_t left,
+                                           struct pnp_vector2_t right,
+                                           const struct pnp_stereo_rig_t *rig,
+                                           struct pnp_vector3_t *out_point);
 
 #ifdef __cplusplus
 }  // extern "C"

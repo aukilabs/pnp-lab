@@ -88,6 +88,29 @@ pub struct pnp_landmark_observation_t {
     pub position: pnp_vector2_t,
 }
 
+/// Calibrated stereo pair: left/right monocular cameras + fixed extrinsics.
+///
+/// `right_from_left` is the pose of the right camera in the left camera frame
+/// (OpenCV convention for stereo math).
+#[repr(C)]
+pub struct pnp_stereo_rig_t {
+    pub left: pnp_camera_t,
+    pub right: pnp_camera_t,
+    pub right_from_left: pnp_pose_t,
+}
+
+/// Per-landmark stereo observation (pixel coords, possibly distorted).
+///
+/// `has_left` / `has_right`: non-zero = present; zero = missing (position ignored).
+#[repr(C)]
+pub struct pnp_stereo_observation_t {
+    pub id: *const c_char,
+    pub has_left: i32,
+    pub left: pnp_vector2_t,
+    pub has_right: i32,
+    pub right: pnp_vector2_t,
+}
+
 /// Solve method enum.
 #[repr(C)]
 pub enum pnp_method_t {
@@ -218,15 +241,11 @@ unsafe fn ffi_camera_to_core(camera: &pnp_camera_t) -> Result<pnp_core::Camera, 
         .map_err(|_| pnp_error_t::PNP_ERROR_SOLVER_FAILED)
 }
 
-unsafe fn read_landmarks_observations(
+unsafe fn read_landmarks(
     landmarks: *const pnp_landmark_t,
     num_landmarks: usize,
-    observations: *const pnp_landmark_observation_t,
-    num_observations: usize,
-) -> Result<(Vec<core::Landmark>, Vec<core::LandmarkObservation>), pnp_error_t> {
+) -> Result<Vec<core::Landmark>, pnp_error_t> {
     let lm_slice = slice::from_raw_parts(landmarks, num_landmarks);
-    let obs_slice = slice::from_raw_parts(observations, num_observations);
-
     let mut core_landmarks = Vec::with_capacity(num_landmarks);
     for lm in lm_slice {
         let id = read_c_str(lm.id).ok_or(pnp_error_t::PNP_ERROR_INVALID_STRING)?;
@@ -235,6 +254,17 @@ unsafe fn read_landmarks_observations(
             position: core::Vector3::new(lm.position.x, lm.position.y, lm.position.z),
         });
     }
+    Ok(core_landmarks)
+}
+
+unsafe fn read_landmarks_observations(
+    landmarks: *const pnp_landmark_t,
+    num_landmarks: usize,
+    observations: *const pnp_landmark_observation_t,
+    num_observations: usize,
+) -> Result<(Vec<core::Landmark>, Vec<core::LandmarkObservation>), pnp_error_t> {
+    let core_landmarks = read_landmarks(landmarks, num_landmarks)?;
+    let obs_slice = slice::from_raw_parts(observations, num_observations);
 
     let mut core_obs = Vec::with_capacity(num_observations);
     for ob in obs_slice {
@@ -246,6 +276,45 @@ unsafe fn read_landmarks_observations(
     }
 
     Ok((core_landmarks, core_obs))
+}
+
+/// # Safety
+/// Camera `dist` buffers in `rig` must satisfy the same rules as `pnp_camera_t`.
+unsafe fn ffi_stereo_rig_to_core(rig: &pnp_stereo_rig_t) -> Result<pnp_core::StereoRig, pnp_error_t> {
+    let left = ffi_camera_to_core(&rig.left)?;
+    let right = ffi_camera_to_core(&rig.right)?;
+    let right_from_left = ffi_pose_to_core(&rig.right_from_left);
+    pnp_core::StereoRig::new(left, right, right_from_left).map_err(core_error_to_ffi)
+}
+
+unsafe fn read_stereo_observations(
+    observations: *const pnp_stereo_observation_t,
+    num_observations: usize,
+) -> Result<Vec<pnp_core::StereoLandmarkObservation>, pnp_error_t> {
+    let obs_slice = slice::from_raw_parts(observations, num_observations);
+    let mut core_obs = Vec::with_capacity(num_observations);
+    for ob in obs_slice {
+        let id = read_c_str(ob.id).ok_or(pnp_error_t::PNP_ERROR_INVALID_STRING)?;
+        let left = if ob.has_left != 0 {
+            Some(core::Vector2::new(ob.left.x, ob.left.y))
+        } else {
+            None
+        };
+        let right = if ob.has_right != 0 {
+            Some(core::Vector2::new(ob.right.x, ob.right.y))
+        } else {
+            None
+        };
+        core_obs.push(pnp_core::StereoLandmarkObservation { id, left, right });
+    }
+    Ok(core_obs)
+}
+
+fn err_result(error: pnp_error_t) -> pnp_result_t {
+    pnp_result_t {
+        error,
+        pose: zero_pose(),
+    }
 }
 
 /// Estimate a planar square-marker pose from four corner rays.
@@ -475,6 +544,91 @@ pub unsafe extern "C" fn peyote_pnp_camera_pose_from_solve_pnp_pose(
     let core_pose = ffi_pose_to_core(&*pose);
     let result = pnp_core::camera_pose_from_solve_pnp_pose(&core_pose);
     core_pose_to_ffi(&result)
+}
+
+/// Solve stereo PnP and return object pose in OpenGL coordinates (left primary).
+///
+/// Landmarks and observations are matched by string `id` (same length required).
+/// Missing left/right pixels (`has_* == 0`) are skipped in the joint residual.
+///
+/// # Safety
+/// `landmarks` must point to `num_landmarks` valid `pnp_landmark_t` structs.
+/// `observations` must point to `num_observations` valid `pnp_stereo_observation_t`
+/// structs. All `id` pointers must be valid null-terminated C strings.
+/// `rig` must be valid; camera `dist` buffers follow `pnp_camera_t` rules.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_solve_stereo(
+    landmarks: *const pnp_landmark_t,
+    num_landmarks: usize,
+    observations: *const pnp_stereo_observation_t,
+    num_observations: usize,
+    rig: *const pnp_stereo_rig_t,
+    method: pnp_method_t,
+) -> pnp_result_t {
+    if landmarks.is_null() || observations.is_null() || rig.is_null() {
+        return err_result(pnp_error_t::PNP_ERROR_NULL_POINTER);
+    }
+
+    let core_landmarks = match read_landmarks(landmarks, num_landmarks) {
+        Ok(v) => v,
+        Err(e) => return err_result(e),
+    };
+    let core_obs = match read_stereo_observations(observations, num_observations) {
+        Ok(v) => v,
+        Err(e) => return err_result(e),
+    };
+    let core_rig = match ffi_stereo_rig_to_core(&*rig) {
+        Ok(r) => r,
+        Err(e) => return err_result(e),
+    };
+    let core_method = method_to_core(method);
+
+    match pnp_core::solve_pnp_stereo(&core_landmarks, &core_obs, &core_rig, core_method) {
+        Ok(pose) => pnp_result_t {
+            error: pnp_error_t::PNP_OK,
+            pose: core_pose_to_ffi(&pose),
+        },
+        Err(e) => err_result(core_error_to_ffi(e)),
+    }
+}
+
+/// Midpoint-triangulate a stereo correspondence into the left OpenCV frame.
+///
+/// On success writes the 3D point to `out_point` and returns `PNP_OK` in
+/// `pnp_result_t.error` (the `pose` field is zeroed / unused).
+///
+/// # Safety
+/// `rig` must be a valid pointer; camera `dist` buffers follow `pnp_camera_t`.
+/// `out_point` must be a valid writable pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn peyote_pnp_triangulate(
+    left: pnp_vector2_t,
+    right: pnp_vector2_t,
+    rig: *const pnp_stereo_rig_t,
+    out_point: *mut pnp_vector3_t,
+) -> pnp_result_t {
+    if rig.is_null() || out_point.is_null() {
+        return err_result(pnp_error_t::PNP_ERROR_NULL_POINTER);
+    }
+
+    let core_rig = match ffi_stereo_rig_to_core(&*rig) {
+        Ok(r) => r,
+        Err(e) => return err_result(e),
+    };
+
+    let left_px = core::Vector2::new(left.x, left.y);
+    let right_px = core::Vector2::new(right.x, right.y);
+
+    match pnp_core::triangulate_midpoint(&core_rig, left_px, right_px) {
+        Ok(p) => {
+            *out_point = core_vector3_to_ffi(&p);
+            pnp_result_t {
+                error: pnp_error_t::PNP_OK,
+                pose: zero_pose(),
+            }
+        }
+        Err(e) => err_result(core_error_to_ffi(e)),
+    }
 }
 
 #[cfg(test)]
@@ -726,5 +880,244 @@ mod tests {
         assert!((cam_pose.position.x - (-1.0)).abs() < 1e-10);
         assert!((cam_pose.position.y - (-2.0)).abs() < 1e-10);
         assert!((cam_pose.position.z - (-3.0)).abs() < 1e-10);
+    }
+
+    fn pinhole_cam(fx: f64, fy: f64, cx: f64, cy: f64) -> pnp_camera_t {
+        pnp_camera_t {
+            fx,
+            fy,
+            cx,
+            cy,
+            dist: std::ptr::null(),
+            dist_len: 0,
+        }
+    }
+
+    fn identity_pose_at(x: f64, y: f64, z: f64) -> pnp_pose_t {
+        pnp_pose_t {
+            position: pnp_vector3_t { x, y, z },
+            rotation: pnp_quaternion_t {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+        }
+    }
+
+    fn stereo_rig_horizontal(baseline: f64) -> pnp_stereo_rig_t {
+        pnp_stereo_rig_t {
+            left: pinhole_cam(800.0, 800.0, 320.0, 240.0),
+            right: pinhole_cam(800.0, 800.0, 320.0, 240.0),
+            right_from_left: identity_pose_at(baseline, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn test_pnp_triangulate_known_point() {
+        // Same fixture as core triangulate_known_point_in_front (baseline 0.1).
+        let rig = pnp_stereo_rig_t {
+            left: pinhole_cam(500.0, 500.0, 320.0, 240.0),
+            right: pinhole_cam(500.0, 500.0, 320.0, 240.0),
+            right_from_left: identity_pose_at(0.1, 0.0, 0.0),
+        };
+        let left = pnp_vector2_t { x: 320.0, y: 240.0 };
+        let right = pnp_vector2_t {
+            x: 500.0 * (-0.1) / 2.0 + 320.0,
+            y: 240.0,
+        };
+        let mut out = pnp_vector3_t {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = unsafe { peyote_pnp_triangulate(left, right, &rig, &mut out) };
+        assert!(matches!(result.error, pnp_error_t::PNP_OK));
+        assert!((out.x - 0.0).abs() < 1e-6);
+        assert!((out.y - 0.0).abs() < 1e-6);
+        assert!((out.z - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_pnp_triangulate_null_pointer() {
+        let left = pnp_vector2_t { x: 0.0, y: 0.0 };
+        let right = pnp_vector2_t { x: 0.0, y: 0.0 };
+        let mut out = pnp_vector3_t {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result =
+            unsafe { peyote_pnp_triangulate(left, right, std::ptr::null(), &mut out) };
+        assert!(matches!(result.error, pnp_error_t::PNP_ERROR_NULL_POINTER));
+    }
+
+    #[test]
+    fn test_pnp_solve_stereo_basic() {
+        // Mirror core stereo_recovers_known_pose: square landmarks, mild pose.
+        let ids: Vec<CString> = (0..4)
+            .map(|i| CString::new(i.to_string()).unwrap())
+            .collect();
+
+        let object_pts = [
+            [-0.1_f64, -0.1, 0.0],
+            [0.1, -0.1, 0.0],
+            [0.1, 0.1, 0.0],
+            [-0.1, 0.1, 0.0],
+        ];
+
+        let landmarks: Vec<pnp_landmark_t> = object_pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| pnp_landmark_t {
+                id: ids[i].as_ptr(),
+                position: pnp_vector3_t {
+                    x: p[0],
+                    y: p[1],
+                    z: p[2],
+                },
+            })
+            .collect();
+
+        // Build observations via pnp_core projection (same pipeline as core tests).
+        let core_landmarks: Vec<pnp_core::Landmark> = object_pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| pnp_core::Landmark {
+                id: i.to_string(),
+                position: pnp_core::Vector3::new(p[0], p[1], p[2]),
+            })
+            .collect();
+        let core_left = pnp_core::Camera::pinhole(800.0, 800.0, 320.0, 240.0).unwrap();
+        let core_right = core_left.clone();
+        let core_rig = pnp_core::StereoRig::new(
+            core_left,
+            core_right,
+            pnp_core::Pose::new(
+                pnp_core::Vector3::new(0.12, 0.0, 0.0),
+                pnp_core::Quaternion::identity(),
+            ),
+        )
+        .unwrap();
+
+        // Mild OpenCV pose; convert projections to FFI stereo observations.
+        let rvec = [0.05_f64, -0.15, 0.08];
+        let t = [0.02_f64, -0.01, 1.5];
+        let rot = pnp_core::rodrigues::rvec_to_rotation_matrix(&rvec);
+        let q = pnp_core::types::rotation_matrix_to_quaternion(&rot);
+        let cv_pose =
+            pnp_core::Pose::new(pnp_core::Vector3::new(t[0], t[1], t[2]), q);
+        let gl_true = pnp_core::pose_tools::from_opencv_to_opengl(&cv_pose);
+
+        let mut observations = Vec::with_capacity(4);
+        for (i, lm) in core_landmarks.iter().enumerate() {
+            let r_mat = cv_pose
+                .rotation
+                .normalize()
+                .to_na_unit()
+                .to_rotation_matrix();
+            let r = r_mat.matrix();
+            let pw = lm.position;
+            let x_left = pnp_core::Vector3::new(
+                r[(0, 0)] * pw.x + r[(0, 1)] * pw.y + r[(0, 2)] * pw.z + cv_pose.position.x,
+                r[(1, 0)] * pw.x + r[(1, 1)] * pw.y + r[(1, 2)] * pw.z + cv_pose.position.y,
+                r[(2, 0)] * pw.x + r[(2, 1)] * pw.y + r[(2, 2)] * pw.z + cv_pose.position.z,
+            );
+            let left_px = pnp_core::Vector2::new(
+                core_rig.left.fx * x_left.x / x_left.z + core_rig.left.cx,
+                core_rig.left.fy * x_left.y / x_left.z + core_rig.left.cy,
+            );
+            let x_right = pnp_core::pose_tools::transform_point(&core_rig.right_from_left, x_left);
+            let right_px = pnp_core::Vector2::new(
+                core_rig.right.fx * x_right.x / x_right.z + core_rig.right.cx,
+                core_rig.right.fy * x_right.y / x_right.z + core_rig.right.cy,
+            );
+            observations.push(pnp_stereo_observation_t {
+                id: ids[i].as_ptr(),
+                has_left: 1,
+                left: pnp_vector2_t {
+                    x: left_px.x,
+                    y: left_px.y,
+                },
+                has_right: 1,
+                right: pnp_vector2_t {
+                    x: right_px.x,
+                    y: right_px.y,
+                },
+            });
+        }
+
+        let rig = stereo_rig_horizontal(0.12);
+        let result = unsafe {
+            peyote_pnp_solve_stereo(
+                landmarks.as_ptr(),
+                landmarks.len(),
+                observations.as_ptr(),
+                observations.len(),
+                &rig,
+                pnp_method_t::PNP_METHOD_ITERATIVE,
+            )
+        };
+
+        assert!(matches!(result.error, pnp_error_t::PNP_OK));
+        let dp = (
+            result.pose.position.x - gl_true.position.x,
+            result.pose.position.y - gl_true.position.y,
+            result.pose.position.z - gl_true.position.z,
+        );
+        let pos_err = (dp.0 * dp.0 + dp.1 * dp.1 + dp.2 * dp.2).sqrt();
+        assert!(pos_err < 1e-3, "position error {}", pos_err);
+        assert!(result.pose.rotation.w.is_finite());
+    }
+
+    #[test]
+    fn test_pnp_solve_stereo_null_pointer() {
+        let rig = stereo_rig_horizontal(0.12);
+        let result = unsafe {
+            peyote_pnp_solve_stereo(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &rig,
+                pnp_method_t::PNP_METHOD_EPNP,
+            )
+        };
+        assert!(matches!(result.error, pnp_error_t::PNP_ERROR_NULL_POINTER));
+    }
+
+    #[test]
+    fn test_pnp_solve_stereo_insufficient_points() {
+        let ids = [CString::new("0").unwrap()];
+        let landmarks = [pnp_landmark_t {
+            id: ids[0].as_ptr(),
+            position: pnp_vector3_t {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        }];
+        let observations = [pnp_stereo_observation_t {
+            id: ids[0].as_ptr(),
+            has_left: 1,
+            left: pnp_vector2_t { x: 320.0, y: 240.0 },
+            has_right: 1,
+            right: pnp_vector2_t { x: 300.0, y: 240.0 },
+        }];
+        let rig = stereo_rig_horizontal(0.12);
+        let result = unsafe {
+            peyote_pnp_solve_stereo(
+                landmarks.as_ptr(),
+                1,
+                observations.as_ptr(),
+                1,
+                &rig,
+                pnp_method_t::PNP_METHOD_EPNP,
+            )
+        };
+        assert!(matches!(
+            result.error,
+            pnp_error_t::PNP_ERROR_INSUFFICIENT_POINTS
+        ));
     }
 }
