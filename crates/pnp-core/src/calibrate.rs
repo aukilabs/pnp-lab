@@ -2114,4 +2114,182 @@ mod tests {
         // Fixed aspect: fy == fx after estimate.
         assert!((result.camera.fx - result.camera.fy).abs() < 1e-9);
     }
+
+    #[test]
+    fn calibrate_camera_recovers_distortion_len5_synthetic() {
+        // Ground-truth Brown–Conrady (length 5); recover with dist_len=5.
+        // Strong tilt diversity so radial distortion is identifiable.
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let dist_true = [0.12, -0.05, 0.001, -0.002, 0.01];
+        let cam_true = Camera::new(fx_true, fy_true, cx_true, cy_true, &dist_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let object = planar_grid_3x3(0.1);
+
+        // Strong yaw/pitch diversity, varied distance — needed for k1.
+        let true_poses: [CvRvecTvec; 12] = [
+            ([0.35, -0.28, 0.08], NaVector3::new(0.02, -0.01, 0.45)),
+            ([-0.40, 0.32, -0.12], NaVector3::new(-0.03, 0.02, 0.55)),
+            ([0.28, 0.38, 0.15], NaVector3::new(0.01, 0.0, 0.42)),
+            ([0.42, -0.15, -0.20], NaVector3::new(-0.02, 0.03, 0.62)),
+            ([-0.25, -0.35, 0.10], NaVector3::new(0.04, -0.02, 0.50)),
+            ([0.12, 0.30, -0.28], NaVector3::new(0.0, 0.01, 0.48)),
+            ([0.38, 0.22, 0.18], NaVector3::new(-0.01, 0.02, 0.58)),
+            ([-0.35, -0.20, -0.08], NaVector3::new(0.03, -0.01, 0.65)),
+            ([0.22, -0.40, 0.20], NaVector3::new(-0.02, 0.0, 0.44)),
+            ([-0.18, 0.42, -0.15], NaVector3::new(0.01, 0.03, 0.52)),
+            ([0.30, 0.10, 0.25], NaVector3::new(-0.015, 0.015, 0.60)),
+            ([-0.32, 0.18, -0.22], NaVector3::new(0.02, -0.015, 0.47)),
+        ];
+
+        let mut views = Vec::with_capacity(true_poses.len());
+        for (rvec, tvec) in &true_poses {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut image_points = Vec::with_capacity(object.len());
+            for p in &object {
+                let pc = r * p.to_na() + tvec;
+                let uv = cam_true
+                    .project(Vector3::from_na(&pc))
+                    .expect("in front of camera");
+                image_points.push(uv);
+            }
+            views.push(CalibrationView { image_points });
+        }
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 5,
+            max_iterations: 150,
+            function_tolerance: 1e-12,
+            rms_success_threshold: None,
+        };
+
+        let result = calibrate_camera(&object, &views, image_width, image_height, &opts)
+            .expect("calibrate_camera with dist_len=5 should succeed");
+
+        assert_eq!(result.views_used, true_poses.len());
+        assert!(
+            result.rms_reprojection_error < 1e-2,
+            "RMS={}",
+            result.rms_reprojection_error
+        );
+        for (i, r) in result.per_view_rms.iter().enumerate() {
+            assert!(*r < 1e-2, "view {i} RMS={r}");
+        }
+
+        // Stored packing: dist_len=5 → [k1,k2,p1,p2,k3]
+        assert_eq!(result.camera.dist.len(), 5);
+        let k1_err = (result.camera.dist[0] - dist_true[0]).abs();
+        assert!(
+            k1_err < 0.02,
+            "k1 err={k1_err} (est={}, true={})",
+            result.camera.dist[0],
+            dist_true[0]
+        );
+
+        // Intrinsics should still be reasonable with free distortion.
+        let fx_rel = (result.camera.fx - fx_true).abs() / fx_true;
+        assert!(
+            fx_rel < 0.02,
+            "fx rel err={fx_rel} (est={}, true={fx_true})",
+            result.camera.fx
+        );
+        assert!((result.camera.fx - result.camera.fy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn refine_distortion_from_noisy_init() {
+        // Direct LM path: free dist_len=5 from a perturbed seed.
+        let fx_true = 800.0;
+        let fy_true = 800.0;
+        let cx_true = 320.0;
+        let cy_true = 240.0;
+        let dist_true = [0.10, -0.04, 0.0, 0.0, 0.008];
+        let cam_true = Camera::new(fx_true, fy_true, cx_true, cy_true, &dist_true).unwrap();
+
+        let image_width = 640u32;
+        let image_height = 480u32;
+        let object = planar_grid_3x3(0.1);
+
+        let true_poses: [CvRvecTvec; 8] = [
+            ([0.30, -0.25, 0.08], NaVector3::new(0.02, -0.01, 0.48)),
+            ([-0.35, 0.28, -0.10], NaVector3::new(-0.03, 0.02, 0.58)),
+            ([0.22, 0.35, 0.12], NaVector3::new(0.01, 0.0, 0.45)),
+            ([0.38, -0.12, -0.18], NaVector3::new(-0.02, 0.03, 0.65)),
+            ([-0.20, -0.32, 0.10], NaVector3::new(0.04, -0.02, 0.52)),
+            ([0.15, 0.28, -0.25], NaVector3::new(0.0, 0.01, 0.50)),
+            ([0.32, 0.18, 0.15], NaVector3::new(-0.01, 0.02, 0.60)),
+            ([-0.28, -0.18, -0.08], NaVector3::new(0.03, -0.01, 0.55)),
+        ];
+
+        let mut views = Vec::with_capacity(true_poses.len());
+        for (rvec, tvec) in &true_poses {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut image_points = Vec::with_capacity(object.len());
+            for p in &object {
+                let pc = r * p.to_na() + tvec;
+                let uv = cam_true
+                    .project(Vector3::from_na(&pc))
+                    .expect("in front of camera");
+                image_points.push(uv);
+            }
+            views.push(CalibrationView { image_points });
+        }
+
+        // Zero-dist seed (pipeline style) + mild pose perturbation.
+        let cam0 = Camera::new(
+            fx_true * 1.03,
+            fy_true * 1.03,
+            cx_true + 3.0,
+            cy_true - 2.0,
+            &[0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .unwrap();
+        let poses0: Vec<CvRvecTvec> = true_poses
+            .iter()
+            .map(|(r, t)| {
+                (
+                    [r[0] + 0.015, r[1] - 0.01, r[2] + 0.008],
+                    NaVector3::new(t.x + 0.003, t.y - 0.002, t.z * 1.02),
+                )
+            })
+            .collect();
+
+        let opts = CalibrateOptions {
+            min_views: 3,
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 5,
+            max_iterations: 150,
+            function_tolerance: 1e-12,
+            rms_success_threshold: None,
+        };
+
+        let (cam_est, _, rms, _) = refine_calibration_lm(
+            &object,
+            &views,
+            image_width,
+            image_height,
+            &opts,
+            cam0,
+            poses0,
+        )
+        .expect("LM refine with free dist should succeed");
+
+        assert!(rms < 1e-2, "overall RMS={rms}");
+        assert_eq!(cam_est.dist.len(), 5);
+        let k1_err = (cam_est.dist[0] - dist_true[0]).abs();
+        assert!(
+            k1_err < 0.02,
+            "k1 err={k1_err} (est={}, true={})",
+            cam_est.dist[0],
+            dist_true[0]
+        );
+    }
 }
