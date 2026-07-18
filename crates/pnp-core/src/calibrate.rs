@@ -1,14 +1,19 @@
 //! Multi-view monocular camera calibration: public types, validation, square
-//! planar object points, planar homography DLT, and Zhang initial intrinsics.
+//! planar object points, planar homography DLT, Zhang initial intrinsics, and
+//! BA parameter packing / RMS helpers.
 //!
-//! Joint bundle adjustment lands in later tasks. This module exposes
-//! configuration / result types, input checks, and private init helpers
-//! (homography DLT + Zhang closed-form `K`).
+//! Joint Levenberg–Marquardt refinement lands in later tasks. This module
+//! exposes configuration / result types, input checks, private init helpers
+//! (homography DLT + Zhang closed-form `K`), and state packing that maps free
+//! intrinsics, distortion coefficients, and per-view OpenCV rvec/tvec into a
+//! flat parameter vector for BA.
 
 use crate::camera::Camera;
-use crate::types::{PnpError, Pose, Vector2, Vector3};
+use crate::rodrigues;
+use crate::types::{rotation_matrix_to_quaternion, Matrix3x3, PnpError, Pose, Vector2, Vector3};
+use alloc::vec;
 use alloc::vec::Vec;
-use nalgebra::{DMatrix, Matrix3};
+use nalgebra::{DMatrix, Matrix3, Vector3 as NaVector3};
 
 /// Options controlling multi-view intrinsic + distortion calibration.
 ///
@@ -575,6 +580,310 @@ fn recover_k_from_b_zeroskew(
     None
 }
 
+// ---------------------------------------------------------------------------
+// Parameter packing + RMS (joint BA state)
+// ---------------------------------------------------------------------------
+
+/// OpenCV object-in-camera pose as Rodrigues `rvec` + translation `tvec`.
+type CvRvecTvec = ([f64; 3], NaVector3<f64>);
+
+/// Free-parameter layout for joint calibration BA.
+///
+/// Flat state vector order:
+///
+/// ```text
+/// [fx, (fy)?, (cx, cy)?, dist_free[0..dist_len],
+///  rvec0[3], tvec0[3], …, rvec_{N-1}[3], tvec_{N-1}[3]]
+/// ```
+///
+/// - `fy` is omitted when [`CalibrateOptions::fix_aspect_ratio`] (then `fy = fx`).
+/// - `cx, cy` are omitted when [`CalibrateOptions::fix_principal_point`]
+///   (locked to [`Self::fixed_cx`] / [`Self::fixed_cy`]).
+/// - `dist_free` has length [`CalibrateOptions::dist_len`] (`0 | 2 | 4 | 5 | 8`);
+///   packing into [`Camera::dist`] follows the table in [`camera_from_params`].
+/// - Per-view poses are OpenCV object-in-camera: Rodrigues `rvec` + `tvec`.
+#[derive(Debug, Clone, PartialEq)]
+struct CalibLayout {
+    fix_aspect_ratio: bool,
+    fix_principal_point: bool,
+    /// Free distortion coefficient count: `0 | 2 | 4 | 5 | 8`.
+    dist_len: usize,
+    n_views: usize,
+    /// Principal point used when `fix_principal_point` is true.
+    fixed_cx: f64,
+    fixed_cy: f64,
+}
+
+impl CalibLayout {
+    /// Build layout from options, view count, and fixed principal point.
+    ///
+    /// `fixed_cx` / `fixed_cy` are only applied when
+    /// `options.fix_principal_point` (typically image center or seed `K`).
+    #[allow(dead_code)] // used by pack/unpack tests and later LM
+    fn new(options: &CalibrateOptions, n_views: usize, fixed_cx: f64, fixed_cy: f64) -> Self {
+        Self {
+            fix_aspect_ratio: options.fix_aspect_ratio,
+            fix_principal_point: options.fix_principal_point,
+            dist_len: options.dist_len,
+            n_views,
+            fixed_cx,
+            fixed_cy,
+        }
+    }
+
+    /// Number of free intrinsic scalars (excluding distortion).
+    fn n_intrinsic_params(&self) -> usize {
+        let mut n = 1; // fx always free
+        if !self.fix_aspect_ratio {
+            n += 1; // fy
+        }
+        if !self.fix_principal_point {
+            n += 2; // cx, cy
+        }
+        n
+    }
+
+    /// Total free parameters in the packed state vector.
+    fn n_params(&self) -> usize {
+        self.n_intrinsic_params() + self.dist_len + self.n_views * 6
+    }
+}
+
+/// Pack free distortion coefficients from a [`Camera`] for a given `dist_len`.
+fn free_dist_from_camera(camera: &Camera, dist_len: usize) -> Vec<f64> {
+    let mut d = vec![0.0; dist_len];
+    let n = dist_len.min(camera.dist.len());
+    d[..n].copy_from_slice(&camera.dist[..n]);
+    d
+}
+
+/// Build a [`Camera`] from free intrinsics and free distortion coefficients.
+///
+/// Distortion packing into stored [`Camera::dist`]:
+///
+/// | `dist_len` | Stored `Camera.dist` |
+/// |------------|----------------------|
+/// | 0 | `[]` |
+/// | 2 | `[k1, k2, 0, 0, 0]` (length 5) |
+/// | 4 | `[k1, k2, p1, p2]` |
+/// | 5 | `[k1, k2, p1, p2, k3]` |
+/// | 8 | full rational 8 |
+///
+/// # Errors
+///
+/// Returns [`PnpError::SolverFailed`] if `dist_len` is unsupported, `dist_free`
+/// length mismatches `dist_len`, or [`Camera::new`] rejects the values.
+// Used by unpack_state and later LM; unit-tested now.
+#[allow(dead_code)]
+fn camera_from_params(
+    fx: f64,
+    fy: f64,
+    cx: f64,
+    cy: f64,
+    dist_free: &[f64],
+    dist_len: usize,
+) -> Result<Camera, PnpError> {
+    if !matches!(dist_len, 0 | 2 | 4 | 5 | 8) {
+        return Err(PnpError::SolverFailed);
+    }
+    if dist_free.len() != dist_len {
+        return Err(PnpError::SolverFailed);
+    }
+    for c in dist_free {
+        if !c.is_finite() {
+            return Err(PnpError::SolverFailed);
+        }
+    }
+
+    let dist: Vec<f64> = match dist_len {
+        0 => Vec::new(),
+        2 => vec![dist_free[0], dist_free[1], 0.0, 0.0, 0.0],
+        4 | 5 | 8 => dist_free.to_vec(),
+        _ => return Err(PnpError::SolverFailed),
+    };
+    Camera::new(fx, fy, cx, cy, &dist)
+}
+
+/// Pack free calibration parameters into a flat state vector.
+///
+/// `poses_cv` are OpenCV object-in-camera `(rvec, tvec)` pairs, one per view.
+/// Length must equal `layout.n_views`. When aspect is fixed, only `camera.fx`
+/// is packed (`fy` is forced to `fx` on unpack). When the principal point is
+/// fixed, `cx`/`cy` are not packed (see [`CalibLayout::fixed_cx`]).
+// Used by later LM; unit-tested now.
+#[allow(dead_code)]
+fn pack_state(layout: &CalibLayout, camera: &Camera, poses_cv: &[CvRvecTvec]) -> Vec<f64> {
+    debug_assert_eq!(poses_cv.len(), layout.n_views);
+    let mut params = Vec::with_capacity(layout.n_params());
+
+    params.push(camera.fx);
+    if !layout.fix_aspect_ratio {
+        params.push(camera.fy);
+    }
+    if !layout.fix_principal_point {
+        params.push(camera.cx);
+        params.push(camera.cy);
+    }
+
+    let free_dist = free_dist_from_camera(camera, layout.dist_len);
+    params.extend_from_slice(&free_dist);
+
+    for (rvec, tvec) in poses_cv.iter().take(layout.n_views) {
+        params.push(rvec[0]);
+        params.push(rvec[1]);
+        params.push(rvec[2]);
+        params.push(tvec.x);
+        params.push(tvec.y);
+        params.push(tvec.z);
+    }
+
+    params
+}
+
+/// Unpack a flat state vector into a [`Camera`] and per-view OpenCV poses.
+///
+/// # Errors
+///
+/// Returns [`PnpError::SolverFailed`] if `params.len()` does not match the
+/// layout, or if [`camera_from_params`] rejects the values.
+// Used by later LM; unit-tested now.
+#[allow(dead_code)]
+fn unpack_state(
+    params: &[f64],
+    layout: &CalibLayout,
+) -> Result<(Camera, Vec<CvRvecTvec>), PnpError> {
+    if params.len() != layout.n_params() {
+        return Err(PnpError::SolverFailed);
+    }
+    if !params.iter().all(|p| p.is_finite()) {
+        return Err(PnpError::SolverFailed);
+    }
+
+    let mut i = 0usize;
+    let fx = params[i];
+    i += 1;
+    let fy = if layout.fix_aspect_ratio {
+        fx
+    } else {
+        let v = params[i];
+        i += 1;
+        v
+    };
+    let (cx, cy) = if layout.fix_principal_point {
+        (layout.fixed_cx, layout.fixed_cy)
+    } else {
+        let cx = params[i];
+        let cy = params[i + 1];
+        i += 2;
+        (cx, cy)
+    };
+
+    let dist_free = &params[i..i + layout.dist_len];
+    i += layout.dist_len;
+
+    let camera = camera_from_params(fx, fy, cx, cy, dist_free, layout.dist_len)?;
+
+    let mut poses = Vec::with_capacity(layout.n_views);
+    for _ in 0..layout.n_views {
+        let rvec = [params[i], params[i + 1], params[i + 2]];
+        let tvec = NaVector3::new(params[i + 3], params[i + 4], params[i + 5]);
+        i += 6;
+        poses.push((rvec, tvec));
+    }
+
+    Ok((camera, poses))
+}
+
+/// Convert an OpenCV [`Pose`] to Rodrigues `rvec` + `tvec`.
+#[allow(dead_code)] // seed packing from solve_pnp (later tasks)
+fn pose_cv_to_rvec_tvec(pose: &Pose) -> CvRvecTvec {
+    let r_mat = pose.rotation.normalize().to_na_unit().to_rotation_matrix();
+    let m = Matrix3x3::from_na(r_mat.matrix());
+    let rvec = rodrigues::rotation_matrix_to_rvec(&m);
+    let tvec = NaVector3::new(pose.position.x, pose.position.y, pose.position.z);
+    (rvec, tvec)
+}
+
+/// Convert Rodrigues `rvec` + `tvec` to an OpenCV [`Pose`].
+#[allow(dead_code)] // result conversion after BA (later tasks)
+fn rvec_tvec_to_pose_cv(rvec: &[f64; 3], tvec: &NaVector3<f64>) -> Pose {
+    let rot_m = rodrigues::rvec_to_rotation_matrix(rvec);
+    let q = rotation_matrix_to_quaternion(&rot_m);
+    Pose::new(Vector3::new(tvec.x, tvec.y, tvec.z), q)
+}
+
+/// Overall and per-view RMS reprojection error using [`Camera::project`].
+///
+/// For each point `j` in view `i` (OpenCV object-in-camera pose):
+///
+/// ```text
+/// X_cam = R_i * X_j + t_i
+/// u_hat = camera.project(X_cam)   // already in distorted pixel space
+/// e     = u_hat - image_points[i][j]
+/// ```
+///
+/// Returns `(overall_rms, per_view_rms)` where RMS is
+/// `sqrt(sum ||e||² / n_points)` over the respective point set (OpenCV-style).
+/// Points that fail to project (behind the camera) contribute a large residual.
+///
+/// `poses_cv` and `views` must have the same length; each view's image list
+/// should match `object_points` length (callers validate inputs earlier).
+// Used by later refine / public calibrate; unit-tested now.
+#[allow(dead_code)]
+fn rms_reprojection(
+    object_points: &[Vector3],
+    views: &[CalibrationView],
+    camera: &Camera,
+    poses_cv: &[CvRvecTvec],
+) -> (f64, Vec<f64>) {
+    let n_views = views.len().min(poses_cv.len());
+    let mut sum_sq_all = 0.0;
+    let mut count_all = 0usize;
+    let mut per_view = Vec::with_capacity(n_views);
+
+    for v in 0..n_views {
+        let (rvec, tvec) = &poses_cv[v];
+        let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+        let img = &views[v].image_points;
+        let n = object_points.len().min(img.len());
+        let mut sum_sq = 0.0;
+        let mut count = 0usize;
+
+        for j in 0..n {
+            let pw = object_points[j].to_na();
+            let pc = r * pw + tvec;
+            let x_cam = Vector3::from_na(&pc);
+            match camera.project(x_cam) {
+                Some(proj) => {
+                    let dx = proj.x - img[j].x;
+                    let dy = proj.y - img[j].y;
+                    sum_sq += dx * dx + dy * dy;
+                }
+                None => {
+                    sum_sq += 1e12;
+                }
+            }
+            count += 1;
+        }
+
+        let view_rms = if count > 0 {
+            libm::sqrt(sum_sq / count as f64)
+        } else {
+            0.0
+        };
+        per_view.push(view_rms);
+        sum_sq_all += sum_sq;
+        count_all += count;
+    }
+
+    let overall = if count_all > 0 {
+        libm::sqrt(sum_sq_all / count_all as f64)
+    } else {
+        0.0
+    };
+    (overall, per_view)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,5 +1274,218 @@ mod tests {
         assert!((fy - ffy).abs() < 1e-12);
         assert!((cx - fcx).abs() < 1e-12);
         assert!((cy - fcy).abs() < 1e-12);
+    }
+
+    fn cameras_close(a: &Camera, b: &Camera, tol: f64) -> bool {
+        (a.fx - b.fx).abs() < tol
+            && (a.fy - b.fy).abs() < tol
+            && (a.cx - b.cx).abs() < tol
+            && (a.cy - b.cy).abs() < tol
+            && a.dist.len() == b.dist.len()
+            && a.dist
+                .iter()
+                .zip(b.dist.iter())
+                .all(|(x, y)| (x - y).abs() < tol)
+    }
+
+    fn poses_rvec_tvec_close(a: &[CvRvecTvec], b: &[CvRvecTvec], tol: f64) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        for ((ra, ta), (rb, tb)) in a.iter().zip(b.iter()) {
+            for k in 0..3 {
+                if (ra[k] - rb[k]).abs() > tol {
+                    return false;
+                }
+            }
+            if (ta - tb).norm() > tol {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip_default_options() {
+        let opts = CalibrateOptions {
+            fix_aspect_ratio: false,
+            fix_principal_point: false,
+            dist_len: 5,
+            ..Default::default()
+        };
+        let cam = Camera::new(
+            900.0,
+            910.0,
+            640.0,
+            360.0,
+            &[0.01, -0.02, 0.001, -0.001, 0.005],
+        )
+        .unwrap();
+        let poses = vec![
+            ([0.1, -0.2, 0.05], NaVector3::new(0.01, -0.02, 0.5)),
+            ([-0.15, 0.1, 0.0], NaVector3::new(-0.03, 0.01, 0.6)),
+            ([0.0, 0.25, -0.1], NaVector3::new(0.0, 0.0, 0.55)),
+        ];
+        let layout = CalibLayout::new(&opts, poses.len(), 640.0, 360.0);
+        // free aspect + free pp: fx,fy,cx,cy + 5 dist + 3*6 = 4+5+18 = 27
+        assert_eq!(layout.n_params(), 27);
+
+        let packed = pack_state(&layout, &cam, &poses);
+        assert_eq!(packed.len(), layout.n_params());
+        let (cam2, poses2) = unpack_state(&packed, &layout).unwrap();
+        assert!(cameras_close(&cam, &cam2, 1e-12));
+        assert!(poses_rvec_tvec_close(&poses, &poses2, 1e-12));
+    }
+
+    #[test]
+    fn pack_unpack_fix_aspect_and_principal() {
+        let opts = CalibrateOptions {
+            fix_aspect_ratio: true,
+            fix_principal_point: true,
+            dist_len: 0,
+            ..Default::default()
+        };
+        // Seed has fy != fx and off-center pp; packing drops them.
+        let cam = Camera::pinhole(800.0, 850.0, 310.0, 250.0).unwrap();
+        let poses = vec![
+            ([0.0, 0.1, 0.0], NaVector3::new(0.0, 0.0, 0.5)),
+            ([0.2, -0.1, 0.05], NaVector3::new(0.02, -0.01, 0.6)),
+        ];
+        let fixed_cx = 320.0;
+        let fixed_cy = 240.0;
+        let layout = CalibLayout::new(&opts, poses.len(), fixed_cx, fixed_cy);
+        // fx only + 0 dist + 2*6 = 13
+        assert_eq!(layout.n_params(), 13);
+
+        let packed = pack_state(&layout, &cam, &poses);
+        let (cam2, poses2) = unpack_state(&packed, &layout).unwrap();
+        assert!((cam2.fx - 800.0).abs() < 1e-12);
+        assert!((cam2.fy - 800.0).abs() < 1e-12); // fy forced = fx
+        assert!((cam2.cx - fixed_cx).abs() < 1e-12);
+        assert!((cam2.cy - fixed_cy).abs() < 1e-12);
+        assert!(cam2.dist.is_empty());
+        assert!(poses_rvec_tvec_close(&poses, &poses2, 1e-12));
+    }
+
+    #[test]
+    fn camera_from_params_dist_packing_table() {
+        // dist_len 0 → []
+        let c0 = camera_from_params(800.0, 800.0, 320.0, 240.0, &[], 0).unwrap();
+        assert!(c0.dist.is_empty());
+
+        // dist_len 2 → [k1,k2,0,0,0]
+        let c2 = camera_from_params(800.0, 800.0, 320.0, 240.0, &[0.1, -0.05], 2).unwrap();
+        assert_eq!(c2.dist, vec![0.1, -0.05, 0.0, 0.0, 0.0]);
+
+        // dist_len 4
+        let d4 = [0.1, -0.05, 0.001, -0.002];
+        let c4 = camera_from_params(800.0, 800.0, 320.0, 240.0, &d4, 4).unwrap();
+        assert_eq!(c4.dist, d4.to_vec());
+
+        // dist_len 5
+        let d5 = [0.1, -0.05, 0.001, -0.002, 0.01];
+        let c5 = camera_from_params(800.0, 800.0, 320.0, 240.0, &d5, 5).unwrap();
+        assert_eq!(c5.dist, d5.to_vec());
+
+        // dist_len 8
+        let d8 = [0.1, -0.05, 0.001, -0.002, 0.01, 0.0, 0.0, 0.002];
+        let c8 = camera_from_params(800.0, 800.0, 320.0, 240.0, &d8, 8).unwrap();
+        assert_eq!(c8.dist, d8.to_vec());
+
+        // reject bad dist_len / length mismatch
+        assert!(camera_from_params(800.0, 800.0, 320.0, 240.0, &[0.1], 2).is_err());
+        assert!(camera_from_params(800.0, 800.0, 320.0, 240.0, &[], 3).is_err());
+    }
+
+    #[test]
+    fn pack_unpack_dist_len_2() {
+        let opts = CalibrateOptions {
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 2,
+            ..Default::default()
+        };
+        let cam = camera_from_params(700.0, 700.0, 400.0, 300.0, &[0.12, -0.08], 2).unwrap();
+        let poses = vec![([0.05, -0.1, 0.02], NaVector3::new(0.0, 0.0, 0.7))];
+        let layout = CalibLayout::new(&opts, 1, 400.0, 300.0);
+        // fx + cx,cy + 2 dist + 6 = 11
+        assert_eq!(layout.n_params(), 11);
+        let packed = pack_state(&layout, &cam, &poses);
+        let (cam2, poses2) = unpack_state(&packed, &layout).unwrap();
+        assert!(cameras_close(&cam, &cam2, 1e-12));
+        assert!(poses_rvec_tvec_close(&poses, &poses2, 1e-12));
+    }
+
+    #[test]
+    fn rms_near_zero_perfect_synthetic() {
+        let fx = 800.0;
+        let fy = 800.0;
+        let cx = 320.0;
+        let cy = 240.0;
+        // Mild radial distortion so project path exercises dist.
+        let cam = Camera::new(fx, fy, cx, cy, &[0.05, -0.01, 0.0, 0.0, 0.0]).unwrap();
+        let object = square_object_points(0.2).unwrap();
+
+        let pose_specs: [CvRvecTvec; 3] = [
+            ([0.15, -0.10, 0.05], NaVector3::new(0.02, -0.01, 0.55)),
+            ([-0.20, 0.18, -0.08], NaVector3::new(-0.03, 0.02, 0.62)),
+            ([0.10, 0.25, 0.12], NaVector3::new(0.01, 0.0, 0.48)),
+        ];
+
+        let mut views = Vec::with_capacity(pose_specs.len());
+        for (rvec, tvec) in &pose_specs {
+            let r = rodrigues::rvec_to_rotation_matrix(rvec).to_na();
+            let mut image_points = Vec::with_capacity(4);
+            for p in &object {
+                let pc = r * p.to_na() + tvec;
+                let x_cam = Vector3::from_na(&pc);
+                let uv = cam.project(x_cam).expect("in front of camera");
+                image_points.push(uv);
+            }
+            views.push(CalibrationView { image_points });
+        }
+
+        let (overall, per_view) = rms_reprojection(&object, &views, &cam, &pose_specs);
+        assert!(
+            overall < 1e-10,
+            "perfect synthetic overall RMS should be ~0, got {overall}"
+        );
+        assert_eq!(per_view.len(), 3);
+        for (i, r) in per_view.iter().enumerate() {
+            assert!(*r < 1e-10, "view {i} RMS={r}");
+        }
+
+        // Pack/unpack the same state and recompute RMS.
+        let opts = CalibrateOptions {
+            fix_aspect_ratio: true,
+            fix_principal_point: false,
+            dist_len: 5,
+            ..Default::default()
+        };
+        let layout = CalibLayout::new(&opts, pose_specs.len(), cx, cy);
+        let packed = pack_state(&layout, &cam, &pose_specs);
+        let (cam2, poses2) = unpack_state(&packed, &layout).unwrap();
+        let (overall2, _) = rms_reprojection(&object, &views, &cam2, &poses2);
+        assert!(overall2 < 1e-10, "roundtrip RMS={overall2}");
+    }
+
+    #[test]
+    fn unpack_rejects_wrong_param_len() {
+        let opts = CalibrateOptions::default();
+        let layout = CalibLayout::new(&opts, 2, 320.0, 240.0);
+        let bad = vec![0.0; layout.n_params() - 1];
+        assert_eq!(unpack_state(&bad, &layout), Err(PnpError::SolverFailed));
+    }
+
+    #[test]
+    fn pose_cv_rvec_tvec_roundtrip() {
+        let rvec = [0.1, -0.2, 0.3];
+        let tvec = NaVector3::new(0.05, -0.02, 0.8);
+        let pose = rvec_tvec_to_pose_cv(&rvec, &tvec);
+        let (r2, t2) = pose_cv_to_rvec_tvec(&pose);
+        let m1 = rodrigues::rvec_to_rotation_matrix(&rvec).to_na();
+        let m2 = rodrigues::rvec_to_rotation_matrix(&r2).to_na();
+        assert!((m1 - m2).norm() < 1e-10);
+        assert!((t2 - tvec).norm() < 1e-12);
     }
 }
