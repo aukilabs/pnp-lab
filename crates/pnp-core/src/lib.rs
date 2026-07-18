@@ -54,6 +54,7 @@
 
 extern crate alloc;
 
+pub mod absolute_orientation;
 pub mod camera;
 pub mod epnp;
 pub mod iterative;
@@ -66,6 +67,7 @@ pub mod stereo;
 pub mod triangulate;
 pub mod types;
 
+pub use absolute_orientation::absolute_orientation;
 pub use camera::Camera;
 pub use solve::{camera_pose_from_solve_pnp_pose, solve_pnp, solve_pnp_camera_pose};
 pub use square_pose::{estimate_square_pose_from_pixels, estimate_square_pose_from_rays};
