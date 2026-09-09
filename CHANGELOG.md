@@ -1,21 +1,23 @@
 # Changelog
 
-## Unreleased — pnplab extraction
+All notable changes to PnPLab are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-- Extracted the PnP workspace from the former monorepo app host into a standalone monorepo.
-- Grouped the Expo module under `bindings/expo-pnp`, separate from the core
-  Rust library crates.
-- Prebuilt Android `.so` libraries and the iOS XCFramework install into the
-  Expo package (same consumer flow as QRKit).
-- Added the `aukilabs-pnplab` Python/NumPy package under `bindings/python`
-  with `solve_pnp`, `solve_pnp_camera_pose`,
-  `camera_pose_from_solve_pnp_pose`, and `estimate_square_pose_from_rays`.
-- **Breaking:** public solve APIs now take a first-class `Camera`
-  (`fx/fy/cx/cy` + optional OpenCV `dist`) instead of a bare `Matrix3x3`.
-  Distorted pixels are undistorted before algebraic solvers. Added
-  `estimate_square_pose_from_pixels`, `Camera::project` /
-  `undistort_pixel` / `unproject_opengl_ray`. WIT package bumped to
-  `auki:pnp@0.2.0`.
+PnPLab is pre-1.0. Public APIs may still change. Prefer pinning a git revision.
+
+## Unreleased
+
+### Added
+
+- Standalone PnPLab workspace: pure-Rust core, C FFI, WASM Component Model,
+  Python/NumPy (`aukilabs-pnplab` / `auki_pnplab`), and an Expo module
+  (`expo-pnp`) with prebuilt Android `.so` libraries and an iOS XCFramework.
+- Three solver methods: **EPnP**, **iterative** (Levenberg–Marquardt), and
+  **SQPnP**.
+- First-class `Camera` (`fx/fy/cx/cy`) with optional Brown–Conrady distortion
+  (OpenCV coefficient order) and OpenCV fisheye.
+- `estimate_square_pose_from_pixels`, `Camera::project` / `undistort_pixel` /
+  `unproject_opengl_ray`.
 - **Multi-view joint PnP (N ≥ 1 calibrated views):**
   - Core: `MultiViewRig` / `CameraView` / `MultiViewObservation`,
     `solve_pnp_multiview` / `solve_pnp_multiview_camera_pose` (mono seed +
@@ -56,3 +58,9 @@
   - C FFI: `pnp_calibrate_options_t`, `pnp_calibrate_from_square_views`.
   - Out of scope for this release: WASM WIT calibration, Expo/TS calibration
     wrappers, single-view calibration, multi-camera extrinsics, OpenCV runtime.
+
+### Changed
+
+- **Breaking:** public solve APIs take a first-class `Camera` instead of a
+  bare `Matrix3x3`. Distorted pixels are undistorted before algebraic solvers.
+  WIT package is `auki:pnp@0.2.0`.

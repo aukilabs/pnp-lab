@@ -5,7 +5,7 @@ development workflow, and pull-request expectations.
 
 ## Before you start
 
-- Search the [issue tracker](https://github.com/aukilabs/pnplab/issues) before
+- Search the [issue tracker](https://github.com/aukilabs/pnp-lab/issues) before
   filing a duplicate bug or feature request.
 - For large features, public API changes, new dependencies, or solver redesigns,
   open an issue first so the approach can be agreed before substantial
@@ -27,8 +27,8 @@ development workflow, and pull-request expectations.
 Clone and verify:
 
 ```bash
-git clone https://github.com/aukilabs/pnplab.git
-cd pnplab
+git clone https://github.com/aukilabs/pnp-lab.git
+cd pnp-lab
 just setup          # or: cargo test --workspace --locked
 just test
 ```
@@ -200,6 +200,8 @@ Document any deviation in the PR. Defaults:
 
 ## Security and safety
 
+- Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not
+  file public issues for security reports.
 - C FFI functions must document `# Safety` requirements (null pointers, buffer
   lengths, string lifetimes).
 - Do not introduce `unsafe` in `pnp-core` without strong justification and

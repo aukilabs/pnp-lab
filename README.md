@@ -1,22 +1,35 @@
 # PnPLab
 
-PnPLab is a pure-Rust
+[![CI](https://github.com/aukilabs/pnp-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/aukilabs/pnp-lab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**PnPLab** is a pure-Rust
 [Perspective-n-Point](https://en.wikipedia.org/wiki/Perspective-n-Point) pose
-estimator. Given a calibrated monocular camera, known 3D landmarks, and their
-2D image observations, it recovers a 6-DoF pose with **no OpenCV runtime
-dependency**.
+estimator. Given a calibrated camera, known 3D landmarks, and their 2D image
+observations, it recovers a 6-DoF pose with **no OpenCV runtime dependency**.
 
 The same solvers are available from Rust, Python/NumPy, C, WebAssembly, and an
 Expo module for React Native.
 
-> **Pre-1.0 software.** APIs may still change. Prefer pinning a git revision or
-> crate version, and read [CHANGELOG.md](CHANGELOG.md) before upgrading.
+> **Pre-1.0 software.** APIs may still change. Pin a git revision, and read
+> [CHANGELOG.md](CHANGELOG.md) before upgrading. The crates are **not on
+> crates.io** yet — depend on this repository.
+
+## Why PnPLab
+
+| | |
+|---|---|
+| **No OpenCV at runtime** | Solvers are pure Rust (`nalgebra` + `libm`). OpenCV is used only to generate optional reference test vectors. |
+| **Camera-first** | First-class `Camera` with pinhole, Brown–Conrady, and OpenCV fisheye models |
+| **Multi-view** | Joint PnP for N ≥ 1 calibrated views; stereo is the N=2 helper |
+| **Portable** | `no_std` + `alloc` core; C, Python, WASM, and Expo bindings from the same crate |
+| **Checked** | Numerically compared against OpenCV `cv::solvePnP` reference vectors |
 
 ## Features
 
 - Three solver methods: **EPnP**, **iterative** (Levenberg–Marquardt), and **SQPnP**
 - First-class monocular `Camera` model with optional Brown–Conrady distortion
-  (OpenCV coefficient order)
+  (OpenCV coefficient order) and OpenCV fisheye
 - **Multi-view joint PnP**: `MultiViewRig` / `solve_pnp_multiview` for N ≥ 1
   calibrated views with fixed extrinsics (primary = `views[0]`)
 - **Calibrated stereo** as N=2 helper: `StereoRig`, joint left+right landmark
@@ -31,9 +44,96 @@ Expo module for React Native.
 - C FFI with auto-generated header (`cbindgen`)
 - Python/NumPy package (`aukilabs-pnplab` / `auki_pnplab`)
 - WASM Component Model interface (`auki:pnp@0.2.0`)
-- Numerically checked against OpenCV `cv::solvePnP` reference vectors
 
-## Getting started
+### Language support
+
+| Binding | Solve | Stereo | Multi-view | Calibration |
+|---------|:-----:|:------:|:----------:|:-----------:|
+| Rust (`pnp-core`) | yes | yes | yes | yes |
+| C FFI | yes | yes | — | yes |
+| Python | yes | yes | — | yes |
+| WASM | yes | — | — | — |
+| Expo / React Native | yes | — | — | — |
+
+## Install
+
+### Rust
+
+Not on crates.io yet. Depend on git and pin a revision for production:
+
+```toml
+[dependencies]
+pnp-core = { git = "https://github.com/aukilabs/pnp-lab", package = "pnp-core" }
+# pin with: rev = "<commit sha>"
+```
+
+In this workspace:
+
+```toml
+pnp-core = { path = "crates/pnp-core" }
+```
+
+### Python
+
+Not on PyPI yet. Build a local wheel from the repository root (requires
+[Maturin](https://www.maturin.rs/) or [uv](https://github.com/astral-sh/uv)):
+
+```bash
+just python-build         # → bindings/python/dist/
+just python-test          # isolated wheel + pytest
+```
+
+```python
+import auki_pnplab
+```
+
+Full API: [bindings/python/README.md](bindings/python/README.md).
+
+### C / native
+
+```bash
+cargo build --release -p pnp-ffi --locked
+# header: crates/pnp-ffi/include/pnp.h
+# library: target/release/libpnp_ffi.{a,so,dylib}
+```
+
+Link against the static or dynamic library and include `pnp.h`. Solve entry
+points take a `pnp_camera_t` (`fx`, `fy`, `cx`, `cy`, optional `dist`).
+
+### Expo / React Native
+
+Prebuilt Android `.so` files and an iOS XCFramework live under
+`bindings/expo-pnp` after:
+
+```bash
+just expo-native
+```
+
+Requires a **dev client** (or bare) build — not Expo Go. Autolink via Expo
+`autolinking.searchPaths` (for example a git submodule):
+
+```json
+{
+  "expo": {
+    "autolinking": {
+      "searchPaths": ["./node_modules", "./modules/pnp-lab/bindings"]
+    }
+  }
+}
+```
+
+```ts
+import {
+  estimateSquarePoseFromRays,
+  estimateSquarePoseFromPixels,
+  solvePnpCameraPose,
+} from "expo-pnp";
+```
+
+See [bindings/README.md](bindings/README.md) and
+[bindings/expo-pnp/README.md](bindings/expo-pnp/README.md).
+
+## Getting started from source
 
 ### Requirements
 
@@ -46,23 +146,13 @@ Expo module for React Native.
 | macOS + Xcode | iOS native artifacts |
 | `cargo-component` (+ `jco` for JS transpile) | WASM |
 
-### Clone and verify
-
-HTTPS:
-
 ```bash
-git clone https://github.com/aukilabs/pnplab.git
-cd pnplab
+git clone https://github.com/aukilabs/pnp-lab.git
+cd pnp-lab
 cargo test --workspace --locked
 ```
 
-SSH:
-
-```bash
-git clone git@github.com:aukilabs/pnplab.git
-cd pnplab
-cargo test --workspace --locked
-```
+SSH: `git clone git@github.com:aukilabs/pnp-lab.git`
 
 With `just`:
 
@@ -71,14 +161,7 @@ just setup    # check toolchain, targets, optional deps
 just test     # full Rust workspace tests
 ```
 
-### Rust (core library)
-
-```toml
-[dependencies]
-pnp-core = { git = "https://github.com/aukilabs/pnplab", package = "pnp-core" }
-# or, in this workspace:
-# pnp-core = { path = "crates/pnp-core" }
-```
+## Quick start (Rust)
 
 ```rust
 use pnp_core::{
@@ -165,7 +248,36 @@ Useful entry points:
 | `MultiViewRig` / `MultiViewObservation` / `CameraView` | N-view calibrated rig and sparse per-view pixels |
 | `StereoRig` / `StereoLandmarkObservation` | Calibrated stereo pair and partial observations |
 
-### Multi-view
+### Python
+
+```python
+import numpy as np
+import auki_pnplab
+
+object_points = np.array(
+    [[-0.15, -0.15, 0.0], [0.15, -0.15, 0.0], [0.15, 0.15, 0.0], [-0.15, 0.15, 0.0]],
+    dtype=np.float64,
+)
+image_points = np.array(
+    [[849.3577, 461.7641], [1070.642, 461.7641], [1096.898, 636.8014], [823.1021, 636.8014]],
+    dtype=np.float64,
+)
+camera = {
+    "fx": 815.8511,
+    "fy": 815.8511,
+    "cx": 960.0,
+    "cy": 540.0,
+    "dist": [],  # or OpenCV [k1, k2, p1, p2, k3, ...]
+}
+
+pose = auki_pnplab.solve_pnp(object_points, image_points, camera, method="iterative")
+print(pose["position"], pose["rotation"])
+```
+
+A pinhole `(3, 3)` OpenCV camera matrix is also accepted in place of the
+`camera` dict.
+
+## Multi-view
 
 **Multi-view is the general joint-PnP API.** A `MultiViewRig` holds N ≥ 1
 calibrated views; `views[0]` is **primary**. The returned object pose is
@@ -286,7 +398,7 @@ Pipeline notes:
 | Public pose | **OpenGL** object pose, primary = `views[0]` (same meaning as `solve_pnp`) |
 | Extrinsics | Per-view `from_primary` is **OpenCV** (`X_view = R * X_primary + t`) |
 
-### Stereo
+## Stereo
 
 Calibrated stereo is a thin N=2 wrapper over multi-view: left is primary,
 `right_from_left` becomes the right view's `from_primary`. The left camera is
@@ -391,7 +503,7 @@ C and Python expose the same stereo surface (`pnp_solve_stereo` /
 `triangulate`). Multi-view is Rust-core today (bindings follow-on). See
 [bindings/python/README.md](bindings/python/README.md).
 
-### Camera calibration (multi-view)
+## Camera calibration (multi-view)
 
 Recover monocular intrinsics and optional Brown–Conrady distortion from
 **many views** of a known planar target—no OpenCV runtime. The pipeline is
@@ -473,86 +585,6 @@ bindings are deferred** for a follow-on. See
 [bindings/python/README.md](bindings/python/README.md) and
 `crates/pnp-ffi/include/pnp.h`.
 
-### Python
-
-Build a local wheel (requires Maturin or `uv`/`uvx`):
-
-```bash
-just python-build         # → bindings/python/dist/
-just python-test          # isolated wheel + pytest
-```
-
-```python
-import numpy as np
-import auki_pnplab
-
-object_points = np.array(
-    [[-0.15, -0.15, 0.0], [0.15, -0.15, 0.0], [0.15, 0.15, 0.0], [-0.15, 0.15, 0.0]],
-    dtype=np.float64,
-)
-image_points = np.array(
-    [[849.3577, 461.7641], [1070.642, 461.7641], [1096.898, 636.8014], [823.1021, 636.8014]],
-    dtype=np.float64,
-)
-camera = {
-    "fx": 815.8511,
-    "fy": 815.8511,
-    "cx": 960.0,
-    "cy": 540.0,
-    "dist": [],  # or OpenCV [k1, k2, p1, p2, k3, ...]
-}
-
-pose = auki_pnplab.solve_pnp(object_points, image_points, camera, method="iterative")
-print(pose["position"], pose["rotation"])
-```
-
-A pinhole `(3, 3)` OpenCV camera matrix is also accepted in place of the
-`camera` dict. Full API notes: [bindings/python/README.md](bindings/python/README.md).
-
-### C / native
-
-```bash
-cargo build --release -p pnp-ffi --locked
-# header: crates/pnp-ffi/include/pnp.h
-# library: target/release/libpnp_ffi.{a,so,dylib}
-```
-
-Link against the static or dynamic library and include `pnp.h`. Solve entry
-points take a `pnp_camera_t` (`fx`, `fy`, `cx`, `cy`, optional `dist`).
-
-### Expo / React Native
-
-Prebuilt Android `.so` files and an iOS XCFramework live under
-`bindings/expo-pnp` after:
-
-```bash
-just expo-native
-```
-
-Autolink the package (for example via a git submodule and Expo
-`autolinking.searchPaths`):
-
-```json
-{
-  "expo": {
-    "autolinking": {
-      "searchPaths": ["./node_modules", "./modules/pnplab/bindings"]
-    }
-  }
-}
-```
-
-```ts
-import {
-  estimateSquarePoseFromRays,
-  estimateSquarePoseFromPixels,
-  solvePnpCameraPose,
-} from "expo-pnp";
-```
-
-See [bindings/README.md](bindings/README.md) and
-[bindings/expo-pnp/README.md](bindings/expo-pnp/README.md).
-
 ## Coordinate conventions
 
 | Topic | Convention |
@@ -609,4 +641,8 @@ coding guidelines, testing, and pull-request expectations.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Copyright (c) 2025–2026 Auki Labs.
+
+## Security
+
+Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).

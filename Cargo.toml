@@ -11,7 +11,11 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/aukilabs/pnplab"
+authors = ["Auki Labs"]
+repository = "https://github.com/aukilabs/pnp-lab"
+homepage = "https://github.com/aukilabs/pnp-lab"
+# Not published to crates.io yet — consume via git. Flip this when ready.
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Search existing issues first.
+        For security reports, use a [private advisory](https://github.com/aukilabs/pnp-lab/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what actually happened?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - pnp-core (Rust)
+        - C FFI
+        - Python
+        - WASM
+        - Expo / React Native
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Git tag, commit SHA, or local revision.
+      placeholder: e.g. develop @ abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal code or steps. Include camera model, solver method, and a few landmark/observation pairs if relevant.
+      render: rust
+    validations:
+      required: true

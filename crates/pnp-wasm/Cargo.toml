@@ -3,6 +3,10 @@ name = "pnp-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 description = "WASM Component Model bindings for PnP pose estimation"
 
 [lib]

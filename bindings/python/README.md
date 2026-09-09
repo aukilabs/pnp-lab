@@ -169,7 +169,7 @@ result = auki_pnplab.calibrate_camera(
 Defaults match the core library: `fix_aspect_ratio=True`, `dist_len=5`,
 `min_views=3`. Single-view calibration is not supported.
 
-## Build and test (from monorepo root)
+## Build and test (from repository root)
 
 ```bash
 just python-build    # wheel → bindings/python/dist/
@@ -188,4 +188,4 @@ storage before detaching.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Parent project: [PnPLab](https://github.com/aukilabs/pnplab).
+MIT — see [LICENSE](LICENSE). Parent project: [PnPLab](https://github.com/aukilabs/pnp-lab).

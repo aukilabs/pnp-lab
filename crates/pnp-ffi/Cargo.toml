@@ -3,6 +3,10 @@ name = "pnp-ffi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 description = "C FFI bindings for PnP pose estimation"
 
 [lib]

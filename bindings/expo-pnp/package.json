@@ -17,12 +17,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aukilabs/pnplab.git",
+    "url": "git+https://github.com/aukilabs/pnp-lab.git",
     "directory": "bindings/expo-pnp"
   },
   "author": "Auki Labs <dev@aukilabs.com> (https://aukilabs.com)",
   "license": "MIT",
-  "homepage": "https://github.com/aukilabs/pnplab#readme",
+  "homepage": "https://github.com/aukilabs/pnp-lab#readme",
   "peerDependencies": {
     "expo": "*",
     "react": "*",
