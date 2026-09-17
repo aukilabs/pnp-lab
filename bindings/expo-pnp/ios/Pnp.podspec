@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.homepage       = 'https://aukilabs.com'
   s.license        = 'MIT'
   s.platforms      = {
-    :ios => '15.1'
+    :ios => '16.4'
   }
   s.source         = { git: '' }
   s.static_framework = true
