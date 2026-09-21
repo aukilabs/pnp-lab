@@ -1,8 +1,10 @@
-//! Pinhole camera model with optional Brown–Conrady distortion.
+//! Pinhole camera model with optional Brown–Conrady or OpenCV fisheye distortion.
 //!
 //! Distortion coefficients follow OpenCV order:
 //! `[k1, k2, p1, p2]` (4), `[k1, k2, p1, p2, k3]` (5), or
 //! `[k1, k2, p1, p2, k3, k4, k5, k6]` (8, rational model).
+//! OpenCV fisheye cameras use `[k1, k2, k3, k4]` through
+//! [`Camera::opencv_fisheye`].
 
 use crate::types::{Matrix3x3, PnpError, Ray3, Vector2, Vector3};
 use alloc::vec::Vec;
@@ -12,10 +14,20 @@ const MIN_FOCAL: f64 = 1e-12;
 const UNDISTORT_ITERS: usize = 10;
 const UNDISTORT_EPS: f64 = 1e-12;
 
+/// Lens distortion model applied to normalized pinhole coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistortionModel {
+    /// OpenCV `calib3d` Brown–Conrady / rational model.
+    BrownConrady,
+    /// OpenCV `fisheye` equidistant model with coefficients `[k1, k2, k3, k4]`.
+    OpenCvFisheye,
+}
+
 /// Calibrated monocular camera: pinhole intrinsics + optional distortion.
 ///
-/// Focal lengths and principal point are in **pixels**. Distortion uses the
-/// OpenCV Brown–Conrady (and optional rational) model.
+/// Focal lengths and principal point are in **pixels**. Use [`Self::new`] for
+/// OpenCV Brown–Conrady (and optional rational) distortion, or
+/// [`Self::opencv_fisheye`] for OpenCV's equidistant fisheye model.
 ///
 /// # Example
 ///
@@ -36,6 +48,8 @@ pub struct Camera {
     pub cy: f64,
     /// OpenCV-ordered coefficients; empty means ideal pinhole (no distortion).
     pub dist: Vec<f64>,
+    /// Interpretation of [`Self::dist`].
+    pub distortion_model: DistortionModel,
 }
 
 impl Camera {
@@ -58,13 +72,41 @@ impl Camera {
     /// Returns [`PnpError::SolverFailed`] on invalid intrinsics or coefficient
     /// count / non-finite values.
     pub fn new(fx: f64, fy: f64, cx: f64, cy: f64, dist: &[f64]) -> Result<Self, PnpError> {
+        Self::with_distortion_model(fx, fy, cx, cy, dist, DistortionModel::BrownConrady)
+    }
+
+    /// Build a camera using OpenCV's `fisheye` equidistant distortion model.
+    ///
+    /// `dist` must contain exactly `[k1, k2, k3, k4]`.
+    pub fn opencv_fisheye(
+        fx: f64,
+        fy: f64,
+        cx: f64,
+        cy: f64,
+        dist: &[f64],
+    ) -> Result<Self, PnpError> {
+        Self::with_distortion_model(fx, fy, cx, cy, dist, DistortionModel::OpenCvFisheye)
+    }
+
+    fn with_distortion_model(
+        fx: f64,
+        fy: f64,
+        cx: f64,
+        cy: f64,
+        dist: &[f64],
+        distortion_model: DistortionModel,
+    ) -> Result<Self, PnpError> {
         if !fx.is_finite() || !fy.is_finite() || !cx.is_finite() || !cy.is_finite() {
             return Err(PnpError::SolverFailed);
         }
         if fx.abs() < MIN_FOCAL || fy.abs() < MIN_FOCAL {
             return Err(PnpError::SolverFailed);
         }
-        if !matches!(dist.len(), 0 | 4 | 5 | 8) {
+        let valid_coefficients = match distortion_model {
+            DistortionModel::BrownConrady => matches!(dist.len(), 0 | 4 | 5 | 8),
+            DistortionModel::OpenCvFisheye => dist.len() == 4,
+        };
+        if !valid_coefficients {
             return Err(PnpError::SolverFailed);
         }
         for c in dist {
@@ -78,6 +120,7 @@ impl Camera {
             cx,
             cy,
             dist: dist.to_vec(),
+            distortion_model,
         })
     }
 
@@ -89,9 +132,19 @@ impl Camera {
         Self::new(na[(0, 0)], na[(1, 1)], na[(0, 2)], na[(1, 2)], dist)
     }
 
-    /// `true` if any stored distortion coefficient is non-zero.
+    /// Build an OpenCV fisheye camera from a column-major camera matrix `K`.
+    pub fn opencv_fisheye_from_matrix(matrix: &Matrix3x3, dist: &[f64]) -> Result<Self, PnpError> {
+        let na = matrix.to_na();
+        Self::opencv_fisheye(na[(0, 0)], na[(1, 1)], na[(0, 2)], na[(1, 2)], dist)
+    }
+
+    /// `true` when projection differs from an ideal pinhole camera.
+    ///
+    /// OpenCV fisheye remains equidistant even when all polynomial
+    /// coefficients are zero, so it always returns `true`.
     pub fn has_distortion(&self) -> bool {
-        self.dist.iter().any(|c| c.abs() > 0.0)
+        self.distortion_model == DistortionModel::OpenCvFisheye
+            || self.dist.iter().any(|c| c.abs() > 0.0)
     }
 
     /// Column-major 3×3 intrinsics matrix `K` only (distortion not embedded).
@@ -174,6 +227,10 @@ impl Camera {
         if !self.has_distortion() {
             return (x, y);
         }
+        if self.distortion_model == DistortionModel::OpenCvFisheye {
+            return self.distort_fisheye_normalized(x, y);
+        }
+
         let k1 = self.coeff(0);
         let k2 = self.coeff(1);
         let p1 = self.coeff(2);
@@ -203,6 +260,10 @@ impl Camera {
         if !self.has_distortion() {
             return (xd, yd);
         }
+        if self.distortion_model == DistortionModel::OpenCvFisheye {
+            return self.undistort_fisheye_normalized(xd, yd);
+        }
+
         let mut x = xd;
         let mut y = yd;
         for _ in 0..UNDISTORT_ITERS {
@@ -216,6 +277,67 @@ impl Camera {
             }
         }
         (x, y)
+    }
+
+    fn distort_fisheye_normalized(&self, x: f64, y: f64) -> (f64, f64) {
+        let radius = libm::sqrt(x * x + y * y);
+        if radius < UNDISTORT_EPS {
+            return (x, y);
+        }
+
+        let theta = libm::atan(radius);
+        let theta2 = theta * theta;
+        let theta4 = theta2 * theta2;
+        let theta6 = theta4 * theta2;
+        let theta8 = theta4 * theta4;
+        let theta_distorted = theta
+            * (1.0
+                + self.coeff(0) * theta2
+                + self.coeff(1) * theta4
+                + self.coeff(2) * theta6
+                + self.coeff(3) * theta8);
+        let scale = theta_distorted / radius;
+        (x * scale, y * scale)
+    }
+
+    fn undistort_fisheye_normalized(&self, xd: f64, yd: f64) -> (f64, f64) {
+        let theta_distorted = libm::sqrt(xd * xd + yd * yd);
+        if theta_distorted < UNDISTORT_EPS {
+            return (xd, yd);
+        }
+
+        // Invert theta_d = theta * (1 + k1*theta^2 + ... + k4*theta^8).
+        let mut theta = theta_distorted;
+        for _ in 0..UNDISTORT_ITERS {
+            let theta2 = theta * theta;
+            let theta4 = theta2 * theta2;
+            let theta6 = theta4 * theta2;
+            let theta8 = theta4 * theta4;
+            let value = theta
+                * (1.0
+                    + self.coeff(0) * theta2
+                    + self.coeff(1) * theta4
+                    + self.coeff(2) * theta6
+                    + self.coeff(3) * theta8)
+                - theta_distorted;
+            let derivative = 1.0
+                + 3.0 * self.coeff(0) * theta2
+                + 5.0 * self.coeff(1) * theta4
+                + 7.0 * self.coeff(2) * theta6
+                + 9.0 * self.coeff(3) * theta8;
+            if derivative.abs() < MIN_FOCAL {
+                break;
+            }
+            let step = value / derivative;
+            theta -= step;
+            if step * step < UNDISTORT_EPS {
+                break;
+            }
+        }
+
+        let radius = libm::tan(theta);
+        let scale = radius / theta_distorted;
+        (xd * scale, yd * scale)
     }
 
     fn coeff(&self, index: usize) -> f64 {
@@ -281,5 +403,40 @@ mod tests {
     fn rejects_invalid_focal_and_coeff_count() {
         assert!(Camera::pinhole(0.0, 100.0, 0.0, 0.0).is_err());
         assert!(Camera::new(100.0, 100.0, 0.0, 0.0, &[1.0, 2.0, 3.0]).is_err());
+        assert!(Camera::opencv_fisheye(100.0, 100.0, 0.0, 0.0, &[]).is_err());
+    }
+
+    #[test]
+    fn fisheye_distort_undistort_roundtrip() {
+        let cam = Camera::opencv_fisheye(
+            402.3,
+            401.7,
+            640.0,
+            360.0,
+            &[0.012, -0.004, 0.0007, -0.0001],
+        )
+        .unwrap();
+
+        let ideal = Vector2::new(980.0, 190.0);
+        let xn = (ideal.x - cam.cx) / cam.fx;
+        let yn = (ideal.y - cam.cy) / cam.fy;
+        let (xd, yd) = cam.distort_normalized(xn, yn);
+        let distorted = Vector2::new(cam.fx * xd + cam.cx, cam.fy * yd + cam.cy);
+        let recovered = cam.undistort_pixel(distorted);
+
+        assert!((recovered.x - ideal.x).abs() < 1e-6);
+        assert!((recovered.y - ideal.y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fisheye_projection_matches_opencv_equation() {
+        let cam = Camera::opencv_fisheye(400.0, 420.0, 320.0, 240.0, &[0.0; 4]).unwrap();
+        let point = Vector3::new(1.0, 0.5, 1.0);
+        let projected = cam.project(point).unwrap();
+        let radius = libm::sqrt(1.0_f64 + 0.25);
+        let scale = libm::atan(radius) / radius;
+
+        assert!((projected.x - (320.0 + 400.0 * scale)).abs() < EPS);
+        assert!((projected.y - (240.0 + 420.0 * 0.5 * scale)).abs() < EPS);
     }
 }

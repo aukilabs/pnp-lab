@@ -94,6 +94,8 @@ fn estimate_object_pose() -> Result<pnp_core::Pose, pnp_core::PnpError> {
     )?;
     // Optional distortion (OpenCV order: k1, k2, p1, p2 [, k3 ...]):
     // let camera = Camera::new(815.8511, 815.8511, 960.0, 540.0, &[0.1, -0.05, 0.0, 0.0, 0.0])?;
+    // OpenCV fisheye calibration uses a distinct equidistant model:
+    // let camera = Camera::opencv_fisheye(815.8511, 815.8511, 960.0, 540.0, &[0.01, -0.003, 0.0, 0.0])?;
 
     let landmarks = vec![
         Landmark {

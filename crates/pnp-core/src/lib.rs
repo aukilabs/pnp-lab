@@ -19,7 +19,7 @@
 //!   ([`calibrate_camera`], [`calibrate_from_square_views`],
 //!   [`CalibrateOptions`], [`CalibrationView`], [`CalibrationResult`],
 //!   [`square_object_points`])
-//! - Calibrated monocular [`Camera`] with optional Brown–Conrady distortion
+//! - Calibrated monocular [`Camera`] with optional Brown–Conrady or OpenCV fisheye distortion
 //!
 //! ## Coordinate conventions
 //!
@@ -88,7 +88,7 @@ pub use calibrate::{
     calibrate_camera, calibrate_from_square_views, square_object_points, CalibrateOptions,
     CalibrationResult, CalibrationView,
 };
-pub use camera::Camera;
+pub use camera::{Camera, DistortionModel};
 pub use multiview::{CameraView, MultiViewObservation, MultiViewRig};
 pub use multiview_solve::{solve_pnp_multiview, solve_pnp_multiview_camera_pose};
 pub use solve::{camera_pose_from_solve_pnp_pose, solve_pnp, solve_pnp_camera_pose};
